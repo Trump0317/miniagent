@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 from .runner import AgentRunner
 from .tools import (
-    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool
+    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool,
+    SkillTool, SkillsLoader
 )
 
 class AgentLoop:
@@ -18,11 +19,8 @@ class AgentLoop:
             api_key=os.getenv("DEEPSEEK_API_KEY"),
             base_url=os.getenv("DEEPSEEK_API_BASE_URL")
         )
-        # 系统提示语，目前硬编码
-        system_prompt="你是一个智能助手，可以使用各种工具来帮助用户完成任务。"
-        # 历史对话记录
-        self.history: list = []
-        self.history.append({"role": "system", "content": system_prompt})
+        # 预加载技能摘要
+        skills_loader = SkillsLoader(skill_directory=root / "skills")
         # 注册工具
         registry = ToolRegistry()
         registry.register(BashTool())
@@ -31,6 +29,16 @@ class AgentLoop:
         registry.register(FileEditTool())
         registry.register(WebFetchTool())
         registry.register(WebSearchTool())
+        registry.register(SkillTool(skills_loader))
+
+        # 系统提示词，目前硬编码
+        system_prompt=f"""
+        你是一个智能助手，可以使用各种工具来帮助用户完成任务。
+        ### 可用技能列表 {skills_loader.get_description()} ###
+        """
+        # 历史对话记录
+        self.history: list = []
+        self.history.append({"role": "system", "content": system_prompt})
 
         self.runner = AgentRunner(
             client=client,
@@ -53,3 +61,5 @@ class AgentLoop:
             for chunk in self.runner.step(self.history):
                 print(chunk, end="", flush=True)
             print("\n")
+
+

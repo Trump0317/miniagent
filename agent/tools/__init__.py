@@ -6,6 +6,7 @@ from .FileReadTool.file_read import FileReadTool
 from .FileWriteTool.file_write import FileWriteTool
 from .WebFetchTool.web_fetch import WebFetchTool
 from .WebSearchTool.web_search import WebSearchTool
+from .SkillTool.skills import SkillTool, SkillsLoader
 
 __all__ = [
     "ToolRegistry",
@@ -15,4 +16,6 @@ __all__ = [
     "FileWriteTool",
     "WebFetchTool",
     "WebSearchTool",
+    "SkillTool",
+    "SkillsLoader",
 ]
