@@ -2,8 +2,10 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-from .skills import SkillsLoader
 from .runner import AgentRunner
+from .tools import (
+    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool
+)
 
 class AgentLoop:
     def __init__(self, root: Path | None = None, model: str = "deepseek-v4-flash"):
@@ -21,10 +23,19 @@ class AgentLoop:
         # 历史对话记录
         self.history: list = []
         self.history.append({"role": "system", "content": system_prompt})
+        # 注册工具
+        registry = ToolRegistry()
+        registry.register(BashTool())
+        registry.register(FileReadTool())
+        registry.register(FileWriteTool())
+        registry.register(FileEditTool())
+        registry.register(WebFetchTool())
+        registry.register(WebSearchTool())
 
         self.runner = AgentRunner(
             client=client,
             model=model,
+            tool_registry=registry,
         )
 
         

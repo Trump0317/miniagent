@@ -1,11 +1,13 @@
 from openai import OpenAI
-import os
+import json
+from .tools.ToolRegisty.registry import ToolRegistry
 
 class AgentRunner:
     def __init__(
         self,
         client: OpenAI,
         model: str,
+        tool_registry: ToolRegistry | None = None,
         memory_store=None,
         token_tracker=None,
         compactor=None,
@@ -17,6 +19,7 @@ class AgentRunner:
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
+        self.tool_registry = tool_registry
         self.memory_store = memory_store
         self.token_tracker = token_tracker
         self.compactor = compactor
@@ -31,42 +34,83 @@ class AgentRunner:
             if self.max_turns is not None and turns >= self.max_turns:
                 print(f"达到最大对话轮数 {self.max_turns}, 触发熔断")
                 break
+
+            tools = self.tool_registry.get_tool_schemas() if self.tool_registry else []
+
             turns += 1
             # 请求模型，设置 stream=True
             response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                messages=history,
+                messages=history, # type: ignore
+                tools=tools, # type: ignore
                 stream=True
             )
 
             full_content = ""
+            full_reasoning_content = ""
+            tool_calls_dict = {}
             for chunk in response:
                 delta = chunk.choices[0].delta
+                
+                # 处理思维链内容 (如 DeepSeek R1)
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    full_reasoning_content += reasoning
+
                 if delta.content:
                     content = delta.content
                     full_content += content
                     yield content
+                if delta.tool_calls:
+                    for tc_chunk in delta.tool_calls:
+                        idx = tc_chunk.index
+                        if idx not in tool_calls_dict:
+                            tool_calls_dict[idx] = {"id": tc_chunk.id, "name": tc_chunk.function.name, "arguments": ""}
+                        
+                        if tc_chunk.function.arguments:
+                            tool_calls_dict[idx]["arguments"] += tc_chunk.function.arguments
 
-            # 将完整回复加入历史
-            history.append({"role": "assistant", "content": full_content})
-            return
             
-            # 有工具调用，执行工具，并将结果加入对话历史
-            # for tool_call in response_message.tool_calls:
-            #     function_name = tool_call.function.name
-            #     function_to_call = available_functions.get(function_name)
+            # 构造消息对象
+            assistant_msg = {"role": "assistant", "content": full_content or None}
+            if full_reasoning_content:
+                assistant_msg["reasoning_content"] = full_reasoning_content
 
-            #     if function_to_call:
-            #         function_args = json.loads(tool_call.function.arguments)
-            #         #print(f"[调用工具]: {function_name}{function_args}\n")
-            #         result = function_to_call(**function_args)
-            #         #print(f"[工具输出]: {result}\n")
-                    
-            #         # 将工具执行结果存入历史
-            #         history.append({
-            #             "tool_call_id": tool_call.id,
-            #             "role": "tool",
-            #             "name": function_name,
-            #             "content": str(result),
-            #         })
+            if tool_calls_dict:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]}
+                    } for tc in tool_calls_dict.values()
+                ]
+            
+            history.append(assistant_msg)
+
+            # 如果没有工具调用，说明对话结束，直接退出 yield
+            if not tool_calls_dict:
+                return
+
+            # 3. 执行工具
+            for tc in assistant_msg["tool_calls"]:
+                func_name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                except json.JSONDecodeError:
+                    args = {}
+                
+                yield f"\n[执行工具: {func_name}...]\n"
+                
+                # 调用你重写过的 ToolRegistry
+                result = self.tool_registry.call_tool(func_name, args) # type: ignore
+                
+                # 将结果放入历史，role 必须是 "tool"
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result
+                })
+            
+            # 4. 继续循环，让模型根据工具结果说话
+            continue
