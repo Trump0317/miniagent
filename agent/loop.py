@@ -5,7 +5,7 @@ from pathlib import Path
 from .runner import AgentRunner
 from .tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool,
-    SkillTool, SkillsLoader
+    SkillTool, SkillsLoader, TodoWriteTool
 )
 
 class AgentLoop:
@@ -30,6 +30,7 @@ class AgentLoop:
         registry.register(WebFetchTool())
         registry.register(WebSearchTool())
         registry.register(SkillTool(skills_loader))
+        registry.register(TodoWriteTool())
 
         # 系统提示词，目前硬编码
         system_prompt=f"""

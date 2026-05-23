@@ -102,7 +102,7 @@ class AgentRunner:
                 
                 yield f"\n[执行工具: {func_name}...]\n"
                 
-                # 调用你重写过的 ToolRegistry
+                # 调用重写过的 ToolRegistry
                 result = self.tool_registry.call_tool(func_name, args) # type: ignore
                 
                 # 将结果放入历史，role 必须是 "tool"
