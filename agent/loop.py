@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 from .runner import AgentRunner
+from .memory import AgentMemory
+from .tokentracker import TokenTracker
 from .tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool,
     SkillTool, SkillsLoader, TodoWriteTool
@@ -21,6 +23,8 @@ class AgentLoop:
         )
         # 预加载技能摘要
         skills_loader = SkillsLoader(skill_directory=root / "skills")
+        self.memory = AgentMemory(memory_dir=root /"agent"/ ".memory", client=client, model=model)
+        self.token_tracker = TokenTracker(log_file=root / "agent" / ".memory" / "tokens.jsonl")
         # 注册工具
         registry = ToolRegistry()
         registry.register(BashTool())
@@ -36,30 +40,47 @@ class AgentLoop:
         system_prompt=f"""
         你是一个智能助手，可以使用各种工具来帮助用户完成任务。
         ### 可用技能列表 {skills_loader.get_description()} ###
+        ### 长期记忆（最近摘要） ###
+        {self.memory.brief_context()}
+        ### 用户偏好（USER.md） ###
+        {"\n".join(self.memory.user_preferences()) or "（当前没有用户偏好）"}
         """
         # 历史对话记录
-        self.history: list = []
-        self.history.append({"role": "system", "content": system_prompt})
+        system_msg = {"role": "system", "content": system_prompt}
+        self.memory.append_history(system_msg)
 
         self.runner = AgentRunner(
             client=client,
             model=model,
             tool_registry=registry,
+            memory=self.memory,
+            token_tracker=self.token_tracker
         )
 
         
-
     def run(self) -> None:
         """主循环，持续接受用户输入并生成回复"""
         while True:
             user_input = input("[You] : ")
             command = user_input.strip()
             if command.lower() in {"exit", "quit"}:
+                # 打印 Token 统计
+                stats = self.token_tracker.stats_by_model()
+                if stats:
+                    print("\n[Tokens] 本次会话 Token 消耗统计:")
+                    for m, s in stats.items():
+                        print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
+
+                result = self.memory.compact()
+                if result.get("summary") or result.get("preferences"):
+                    print("[Memory] 已自动压缩并保存本次会话记录")
                 print("退出对话")
                 break
-            self.history.append({"role": "user", "content": command})
+            msg = {"role": "user", "content": command}
+            self.memory.append_history(msg)
+            
             print("[Assistant] : ", end="", flush=True)
-            for chunk in self.runner.step(self.history):
+            for chunk in self.runner.step(self.memory.history):
                 print(chunk, end="", flush=True)
             print("\n")
 

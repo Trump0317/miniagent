@@ -8,9 +8,8 @@ class AgentRunner:
         client: OpenAI,
         model: str,
         tool_registry: ToolRegistry | None = None,
-        memory_store=None,
+        memory=None,
         token_tracker=None,
-        compactor=None,
         compact_threshold: float = 0.7,
         max_tokens: int = 20000,
         max_context: int = 200_000,
@@ -20,9 +19,8 @@ class AgentRunner:
         self.model = model
         self.max_tokens = max_tokens
         self.tool_registry = tool_registry
-        self.memory_store = memory_store
+        self.memory = memory
         self.token_tracker = token_tracker
-        self.compactor = compactor
         self.max_context = max_context
         self.compact_threshold = compact_threshold
         self.max_turns = max_turns
@@ -44,13 +42,22 @@ class AgentRunner:
                 max_tokens=self.max_tokens,
                 messages=history, # type: ignore
                 tools=tools, # type: ignore
-                stream=True
+                stream=True,
+                stream_options={"include_usage": True}
             )
 
             full_content = ""
             full_reasoning_content = ""
             tool_calls_dict = {}
             for chunk in response:
+                if hasattr(chunk, "usage") and chunk.usage: # 检查 chunk 本身是否有 usage 字段
+                    if self.token_tracker:
+                        self.token_tracker.record(self.model, chunk.usage)
+                    continue
+                
+                if not chunk.choices:
+                    continue
+
                 delta = chunk.choices[0].delta
                 
                 # 处理思维链内容 (如 DeepSeek R1)
@@ -86,10 +93,12 @@ class AgentRunner:
                     } for tc in tool_calls_dict.values()
                 ]
             
-            history.append(assistant_msg)
+            if self.memory:
+                self.memory.append_history(assistant_msg)
 
             # 如果没有工具调用，说明对话结束，直接退出 yield
             if not tool_calls_dict:
+                self._maybe_compact()
                 return
 
             # 3. 执行工具
@@ -106,11 +115,22 @@ class AgentRunner:
                 result = self.tool_registry.call_tool(func_name, args) # type: ignore
                 
                 # 将结果放入历史，role 必须是 "tool"
-                history.append({
+                msg = {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": result
-                })
+                }
+                if self.memory:
+                    self.memory.append_history(msg)
             
+            
+
             # 4. 继续循环，让模型根据工具结果说话
             continue
+
+    def _maybe_compact(self) -> None:
+        if not (self.memory and self.token_tracker):
+            return
+        if not self.token_tracker.should_compact(self.max_context, self.compact_threshold):
+            return
+        self.memory.compact()
