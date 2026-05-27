@@ -1,90 +1,195 @@
 # Agent 逻辑说明文档
 
-本文档详细介绍了 `agent/` 目录下的核心逻辑与架构设计。
+本文档详细介绍了 `agent/` 目录下的核心逻辑与重构后的架构设计。
 
 ## 1. 核心架构概述
 
-该项目实现了一个基于 LLM（大语言模型）的智能助手框架，采用了经典的 **ReAct (Reasoning and Acting)** 模式。系统能够通过工具调用（Tool Calling）与外部环境交互，并根据执行结果调整后续行为。
+项目实现了基于 LLM 的智能助手框架，采用 ReAct 模式。重构后的架构将配置、状态、执行三层解耦：
 
-主要组件分布在 `agent/` 目录下：
+```
+AppConfig  →  Agent  →  Conversation (状态)
+  (配置)        │         ├── AgentMemory (记忆)
+                │         └── TokenTracker (统计)
+                │
+                ├── AgentRunner (执行引擎)
+                │     ├── 流式 LLM 调用
+                │     ├── 串行/并行工具调度
+                │     ├── 流式工具输出
+                │     └── 事件钩子
+                │
+                └── AgentLoader / PromptLoader
+                      ├── 子代理定义 (subagent/*.md)
+                      └── 命令模板 (prompts/*.md)
+```
 
-- **`loop.py`**: 对话主循环管理，负责初始化环境、注册工具并处理用户输入。
-- **`runner.py`**: 核心执行器，负责与模型交互、处理思维链（Reasoning）以及调度工具执行。
-- **`memory.py`**: 记忆系统，负责对话历史的持久化、长期记忆维护及自动压缩总结。
-- **`tokentracker.py`**: Token 计数器，记录每轮对话的消耗，支持缓存统计。
-- **`tools/`**: 工具包，包含工具注册表、基类定义以及各种具体功能的实现。
+### 核心文件
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `config.py` | 115 | 多 Provider 配置，`.env` 智能检测 |
+| `conversation.py` | 80 | 会话状态：历史、记忆、Token 统一管理 |
+| `loop.py` | 140 | Agent 组装入口 + `/command` 交互循环 |
+| `runner.py` | 265 | 执行引擎：LLM 流式调用 + 工具编排 |
+| `memory.py` | 265 | 三层记忆 + 自动压缩 + 历史恢复 |
+| `hooks.py` | 65 | 事件钩子：`on_tool_call` / `on_tool_result` |
+| `prompts.py` | 90 | Prompt 模板加载器 |
+| `tokentracker.py` | 70 | Token 消耗统计 |
 
 ---
 
 ## 2. 关键组件详解
 
-### 2.1 AgentLoop (`agent/loop.py`)
-`AgentLoop` 是系统的入口点，其逻辑流程如下：
+### 2.1 AppConfig (`agent/config.py`)
 
-1. **初始化**:
-   - 加载配置文件（`.env`）。
-   - 初始化 OpenAI 兼容的客户端（如 DeepSeek）。
-   - 初始化 **Memory** 和 **TokenTracker**。
-   - 加载技能摘要（`SkillsLoader`）。
-   - **工具注册**: 实例化并向 `ToolRegistry` 注册各类工具（Bash、FileRead、FileEdit、TodoWrite 等）。
-2. **状态管理**:
-   - 维护 `history` 列表（通过 `AgentMemory` 管理），存储系统提示词（System Prompt）、用户输入、模型回复及工具返回结果。
-   - 系统提示词会动态注入 **长期记忆** 和 **用户偏好**。
-3. **主循环 (`run`)**:
-   - 监听控制台输入。
-   - 调用 `AgentRunner` 执行对话并流式显示结果。
-   - 退出时打印 Token 统计并触发记忆压缩。
+集中管理所有可配置项，替代了之前散落在各处的硬编码参数。
 
-### 2.2 AgentRunner (`agent/runner.py`)
-`AgentRunner` 是模型交互的核心处理类，支持多轮迭代。
+- **多 Provider 支持**：`PROVIDER_PRESETS` 定义 deepseek / openai / custom 三组预设
+- **智能检测**：`from_env()` 自动根据环境变量（`DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `API_KEY`）选择 Provider
+- **可覆盖**：所有参数都可通过 `overrides` 传入
 
-- **流式处理**: 支持流式获取模型输出，并能区分普通内容（`content`）和思维链内容（`reasoning_content`）。
-- **Token 监控**: 在流式输出过程中实时记录 Token 使用情况，支持 DeepSeek 缓存命中统计。
-- **自动压缩**: 根据 `max_context` 和 `compact_threshold` 自动判断是否需要调用 `memory.compact()` 进行历史瘦身。
-- **迭代循环 (`step`)**:
-  1. 向模型发送当前对话历史及可用工具 Schema。
-  2. 接收响应。如果模型返回 `tool_calls`（工具调用请求），则暂停文本生成。
-  3. **工具执行**: 解析工具名和参数，通过 `ToolRegistry` 调用对应工具。
-  4. **反馈闭环**: 将工具执行结果作为 `role: tool` 的消息加入历史。
-  5. **继续迭代**: 重新请求模型，让其根据工具结果给出最终结论或进行下一步行动，直到模型不再要求调用工具。
+```python
+# 自动检测
+config = AppConfig.from_env()
 
-### 2.3 记忆系统 (`agent/memory.py`)
-`AgentMemory` 提供了三层记忆存储结构，确保 Agent 在长对话中保持连贯性：
+# 显式指定
+config = AppConfig.from_env(provider="openai", model="gpt-4o")
 
-- **短期记忆**: 当前对话的 `history` 列表。
-- **历史摘要** (`summaries/`): 每天生成的对话关键点总结。
-- **长期记忆** (`memory.md`): 记录核心目标、当前任务与关键事实。
-- **用户偏好** (`user.md`): 记录用户的习惯和个性化要求。
-- **压缩机制**: 当历史消息达到阈值时，自动调用 LLM 提取关键信息并更新摘要/长期记忆，清空冗余历史。
+# 完全手动
+config = AppConfig(provider="custom", model="llama3", api_base_url="http://localhost:8000/v1")
+```
 
-### 2.4 工具系统 (`agent/tools/`)
+### 2.2 Agent (`agent/loop.py`)
 
-#### ToolRegistry (`ToolRegisty/registry.py`)
-- **管理中心**: 负责存储所有已注册的工具实例。
-- **Schema 生成**: 将工具定义的参数转换为符合模型（OpenAI/DeepSeek）要求的 JSON Schema 格式。
-- **安全分发**: 提供 `call_tool` 接口，在执行前进行参数校验和错误捕获。
+从 `AgentLoop` 重命名为 `Agent`，职责从"上帝方法"变为"组装器"：
+
+- 创建 `AppConfig` → 创建客户端
+- 创建 `AgentMemory` + `TokenTracker` → 包装为 `Conversation`
+- 创建 `ToolRegistry`（主工具 + 子代理工具）
+- 创建 `AgentRunner`（绑定 `Conversation`）
+- `run()` 主循环支持 `/command` 模板展开
+
+### 2.3 AgentRunner (`agent/runner.py`)
+
+执行引擎，支持两种模式：
+
+- **主循环模式**：传入 `conversation`，自动管理历史和 Token
+- **子代理模式**：不传 `conversation`，用原始 `history` list
+
+**关键流程** (`step` 方法)：
+
+1. LLM 流式调用 → 逐 chunk 产出文本
+2. 解析 `tool_calls` → 串行或并行执行
+3. `_execute_tools` → 根据 `parallel_safe` 标记决定策略：
+   - 全部安全 → `ThreadPoolExecutor` 并行（最多 8 并发）
+   - 存在不安全 → 全部降级串行
+4. 支持流式工具执行（`supports_streaming` + `stream_execute`）
+5. 结果自动截断（50KB / 2000 行）
+
+### 2.4 Conversation (`agent/conversation.py`)
+
+统一管理会话状态，替代 Runner 直接操作 `memory` 和 `token_tracker`：
+
+- `add_user_message()` / `add_assistant_message()` / `add_tool_result()`
+- `record_tokens()` — 记录 Token 消耗
+- `should_compact()` / `compact()` — 压缩触发
+- `restore` 参数 — 启动时是否从 `history.jsonl` 恢复历史
+
+### 2.5 记忆系统 (`agent/memory.py`)
+
+三层记忆结构：
+
+- **短期记忆**：当前对话 `history` 列表
+- **历史摘要**：每日对话总结（`summaries/*.md`）
+- **长期记忆**：核心事实（`memory.md`）+ 用户偏好（`user.md`）
+
+新增 `restore_history()` 方法，从 `history.jsonl` 加载上次会话（含 tool 消息）。
+
+### 2.6 工具系统 (`agent/tools/`)
 
 #### Tool 基类 (`ToolRegisty/base.py`)
-- **Pydantic 驱动**: 每个工具都必须定义 `args_model`（继承自 `pydantic.BaseModel`），利用 Pydantic 的强类型校验能力确保 LLM 传参的准确性。
-- **标准化接口**: 强制要求实现 `execute` 方法，确保所有工具的调用行为一致。
 
-#### 具体工具实现
-- **BashTool**: 执行系统命令。
-- **FileTools** (`FileRead`, `FileWrite`, `FileEdit`): 处理文件 IO 及增量编辑。
-- **WebTools** (`WebFetch`, `WebSearch`): 获取网页内容或进行网络搜索。
-- **SkillTool**: 动态加载并使用预定义的复杂操作序列（Skills）。
-- **TodoWriteTool**: 管理待办事项列表，支持增删改查。
+重构后不再使用 `__abstractmethods__` hack：
+
+- `@tool` 装饰器直接注入 `_tool_name` / `_tool_description` / `_args_model` 类属性
+- 子类无需冗余的 `name: str` 等类注解
+- `parallel_safe` — 声明是否可并发
+- `supports_streaming` + `stream_execute()` — 可选择流式执行
+
+#### 具体工具
+
+| 工具 | 特性 |
+|------|------|
+| **BashTool** | 安全护栏（正则黑名单）+ 流式输出（Popen 逐行） |
+| **FileEditTool** | 三级匹配：精确 → 忽略缩进 → 失败提示 |
+| **SubagentTool** | 单/并行/链式，支持命名 Agent 定义，实时输出 |
+| **TodoWriteTool** | `parallel_safe=False`，防止状态竞争 |
+
+### 2.7 事件钩子 (`agent/hooks.py`)
+
+两个钩子点：
+
+- `on_tool_call(name, args)` → 返回 `{"block": True}` 拦截 / `{"args": ...}` 修改参数
+- `on_tool_result(name, result)` → 返回修改后的结果
+
+```python
+hooks = EventHooks()
+hooks.on_tool_call = lambda name, args: (
+    {"block": True, "reason": "只读模式"}
+    if name not in READ_ONLY else None
+)
+agent.runner.hooks = hooks
+```
+
+### 2.8 Agent 定义 (`agent/subagent/*.md`)
+
+Markdown + YAML frontmatter 定义子代理，无需改代码：
+
+```markdown
+---
+name: scout
+description: 快速侦查代码库
+tools: bash_tool, file_read_tool
+model: deepseek-v4-flash
+max_turns: 10
+---
+你是代码库侦查员...
+```
+
+### 2.9 Prompt 模板 (`agent/prompts/*.md`)
+
+用户输入 `/name query` 自动展开为模板：
+
+```markdown
+---
+description: 用 scout 先侦查再回答
+---
+先用 scout 子代理快速侦查 {query}，然后根据侦查结果回答。
+```
 
 ---
 
 ## 3. 工作流示意
 
-1. **用户输入** -> `AgentLoop` 接收 -> `AgentRunner` 启动。
-2. **模型请求** -> `AgentRunner` 封装历史 + 工具 Schema -> 发送。
-3. **决策分歧**:
-   - **如果输出文本**: 直接反馈给用户。
-   - **如果调用工具**: 
-     - 执行器根据 `tool_calls` 找到对应工具类。
-     - Pydantic 进行参数校验 -> 执行 `execute`。
-     - 结果存入历史 -> 回到步骤 2 循环。
-4. **对话结束** -> 模型给出最终回复 -> 等待下一次用户输入。
+```
+用户输入 "/scout agent/runner.py"
+        │
+        ▼
+Agent._expand_command()
+   → PromptLoader.resolve("scout", "agent/runner.py")
+   → "先用 scout 子代理快速侦查 agent/runner.py..."
+        │
+        ▼
+AgentRunner.step(history)
+   ┌── LLM 流式调用 ──→ yield 文本 chunks
+   ├── 解析 tool_calls: [{name: "subagent_tool", args: {agent: "scout", ...}}]
+   ├── before hook → 可拦截/修改
+   ├── _execute_tools → 并行/串行调度
+   │     └── SubagentTool._run_one
+   │           ├── AgentLoader.get("scout") → AgentDefinition
+   │           └── 独立 AgentRunner(registry=filtered, model=deepseek-v4-flash)
+   ├── after hook → 可修改结果
+   └── 循环直到 LLM 不再调用工具
+        │
+        ▼
+   "[Assistant]: ## 找到的文件..."
+```
