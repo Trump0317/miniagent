@@ -8,6 +8,7 @@ from .WebFetchTool.web_fetch import WebFetchTool
 from .WebSearchTool.web_search import WebSearchTool
 from .SkillTool.skills import SkillTool, SkillsLoader
 from .TodoWriteTool.todo_write import TodoWriteTool
+from .SubagentTool.subagent import SubagentTool
 
 __all__ = [
     "ToolRegistry",
@@ -20,4 +21,5 @@ __all__ = [
     "SkillTool",
     "SkillsLoader",
     "TodoWriteTool",
+    "SubagentTool"
 ]

@@ -7,7 +7,7 @@ from .memory import AgentMemory
 from .tokentracker import TokenTracker
 from .tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool,
-    SkillTool, SkillsLoader, TodoWriteTool
+    SkillTool, SkillsLoader, TodoWriteTool, SubagentTool
 )
 
 class AgentLoop:
@@ -35,6 +35,19 @@ class AgentLoop:
         registry.register(WebSearchTool())
         registry.register(SkillTool(skills_loader))
         registry.register(TodoWriteTool())
+
+        subregistry = ToolRegistry()
+        subregistry.register(BashTool())
+        subregistry.register(FileReadTool())
+
+        registry.register(SubagentTool(
+            client=client,
+            model=model, 
+            registry=subregistry, 
+            token_tracker=self.token_tracker,
+            system_prompt="你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题，由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。",
+            max_turns=10
+        ))
 
         # 系统提示词，目前硬编码
         system_prompt=f"""

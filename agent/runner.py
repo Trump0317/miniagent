@@ -73,9 +73,13 @@ class AgentRunner:
                     for tc_chunk in delta.tool_calls:
                         idx = tc_chunk.index
                         if idx not in tool_calls_dict:
-                            tool_calls_dict[idx] = {"id": tc_chunk.id, "name": tc_chunk.function.name, "arguments": ""}
+                            tool_calls_dict[idx] = {"id": None, "name": None, "arguments": ""}
                         
-                        if tc_chunk.function.arguments:
+                        if tc_chunk.id:
+                            tool_calls_dict[idx]["id"] = tc_chunk.id
+                        if tc_chunk.function and tc_chunk.function.name:
+                            tool_calls_dict[idx]["name"] = tc_chunk.function.name
+                        if tc_chunk.function and tc_chunk.function.arguments:
                             tool_calls_dict[idx]["arguments"] += tc_chunk.function.arguments
 
             
@@ -95,6 +99,8 @@ class AgentRunner:
             
             if self.memory:
                 self.memory.append_history(assistant_msg)
+            else:
+                history.append(assistant_msg)
 
             # 如果没有工具调用，说明对话结束，直接退出 yield
             if not tool_calls_dict:
@@ -122,6 +128,8 @@ class AgentRunner:
                 }
                 if self.memory:
                     self.memory.append_history(msg)
+                else:
+                    history.append(msg)
             
             
 
