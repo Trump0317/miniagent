@@ -48,6 +48,48 @@ class AgentMemory:
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    # ── 会话恢复 ──
+
+    def restore_history(self) -> list[dict]:
+        """从 history.jsonl 加载上次保存的对话，恢复为消息列表。
+
+        系统消息不在持久化文件中（每次启动重建），
+        恢复 user / assistant / tool 消息。
+        """
+        if not self.history_file.exists():
+            return []
+        entries = []
+        with self.history_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                role = entry.get("role", "")
+                msg: dict = {"role": role, "content": entry.get("content", "")}
+
+                # 恢复工具消息的 tool_call_id
+                if role == "tool":
+                    meta = entry.get("metadata", {})
+                    if meta.get("tool_call_id"):
+                        msg["tool_call_id"] = meta["tool_call_id"]
+
+                # 恢复助手消息中的思维链和工具调用
+                if role == "assistant":
+                    meta = entry.get("metadata", {})
+                    if meta.get("reasoning_content"):
+                        msg["reasoning_content"] = meta["reasoning_content"]
+                    if meta.get("tool_calls"):
+                        msg["tool_calls"] = meta["tool_calls"]
+
+                entries.append(msg)
+
+        return entries
     
     def _today_file(self, when: datetime | None = None) -> Path:
         moment = when or datetime.now()
@@ -87,14 +129,14 @@ class AgentMemory:
         return [line.strip("- ").strip() for line in lines if line.strip().startswith("-")]
 
     def append_history(self, content: Any):
-        """记录对话历史"""
+        """记录对话历史。系统消息和工具结果也持久化（会话恢复需要完整消息链）。"""
         self.history.append(content)
         if not isinstance(content, dict):
             return
 
         role = content.get("role")
-        if role == "system" or role == "tool":
-            # 系统消息和工具中间结果不记入持久化日志，保持日志可读性
+        if role == "system":
+            # 系统消息是每次启动重建的，不需要持久化
             return
 
         entry = ConversationEntry(
@@ -104,7 +146,8 @@ class AgentMemory:
             metadata={
                 "reasoning_content": content.get("reasoning_content"),
                 "tool_calls": content.get("tool_calls"),
-            } if role == "assistant" else {}
+                "tool_call_id": content.get("tool_call_id"),
+            } if role == "assistant" or role == "tool" else {}
         )
 
         with self.history_file.open("a", encoding="utf-8") as f:

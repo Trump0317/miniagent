@@ -41,6 +41,7 @@ class Agent:
             system_prompt=system_prompt,
             max_context=cfg.max_context,
             compact_threshold=cfg.compact_threshold,
+            restore=cfg.restore_session,
         )
 
         # ── 工具注册 ──

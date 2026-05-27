@@ -22,6 +22,7 @@ class Conversation:
         system_prompt: str,
         max_context: int = 200_000,
         compact_threshold: float = 0.7,
+        restore: bool = True,
     ):
         self.memory = memory
         self.token_tracker = token_tracker
@@ -31,6 +32,14 @@ class Conversation:
         # 启动时将系统提示词注入为第一条消息
         system_msg = {"role": "system", "content": system_prompt}
         self.memory.append_history(system_msg)
+
+        # 如果启用恢复，加载上次会话的 user/assistant 消息
+        if restore:
+            old_messages = self.memory.restore_history()
+            if old_messages:
+                for msg in old_messages:
+                    self.memory.append_history(msg)
+                print(f"[Conversation] 已恢复 {len(old_messages)} 条历史消息", flush=True)
 
     @property
     def history(self) -> list[dict]:
