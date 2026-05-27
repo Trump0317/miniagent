@@ -1,8 +1,25 @@
 from pydantic import BaseModel, Field
 import subprocess
-import platform
-from typing import Optional, Type
+import re
+from typing import Optional, Type, ClassVar
 from agent.tools.ToolRegisty.base import Tool, tool
+
+# ── 安全护栏：禁止执行的命令模式 ──
+# 注意：这不是真正的沙箱，只是防止 LLM 意外执行破坏性操作。
+FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
+    # (正则, 说明)
+    (r"rm\s+(-[rRf]\s*)+\s*/",           "禁止递归强制删除根目录"),
+    (r"rm\s+(-[rRf]\s*)+\s*~",           "禁止删除用户目录"),
+    (r"rm\s+(-[rRf]\s*)+\s*\$HOME",      "禁止删除 HOME 目录"),
+    (r"\bmkfs\.",                          "禁止格式化文件系统"),
+    (r"dd\s+if=",                          "禁止直接操作块设备"),
+    (r">\s*/dev/sd[a-z]",                 "禁止覆写磁盘设备"),
+    (r"chmod\s+(-R\s+)?777\s*/",          "禁止对根目录开放所有权限"),
+    (r"chown\s+(-R\s+)?[^\s]+\s*/",       "禁止递归变更根目录所有者"),
+    (r":\s*\{\s*:\|:&\s*\}\s*;\s*:",       "禁止 fork 炸弹"),
+    (r"wget\s+.*\|\s*(ba)?sh",             "禁止下载并执行远程脚本"),
+    (r"curl\s+.*\|\s*(ba)?sh",             "禁止通过 curl 下载并执行远程脚本"),
+]
 
 class BashArgs(BaseModel):
     command: str = Field(description="要在终端中执行的有效命令字符串。")
@@ -15,19 +32,26 @@ class BashArgs(BaseModel):
 )
 class BashTool(Tool):
     """
-    在宿主机环境中执行 shell 命令。
+    在宿主机环境中执行 shell 命令，附带安全护栏。
     """
-    # 添加工具的名称、描述和参数模型避免静态解析报错
     name: str
     description: str
     args_model: Type[BashArgs]
 
+    def _check_safety(self, command: str) -> str | None:
+        """检查命令是否安全，返回 None 表示通过，否则返回拒绝原因"""
+        for pattern, reason in FORBIDDEN_PATTERNS:
+            if re.search(pattern, command):
+                return f"[BashTool]: 安全拦截 - {reason}\n匹配模式: {pattern}"
+        return None
+
     def execute(self, command: str, timeout: int = 300) -> str:
-        # 兼容性处理
-        is_windows = platform.system() == "Windows"
-        
+        # 1. 安全护栏
+        block_reason = self._check_safety(command)
+        if block_reason:
+            return block_reason
+
         try:
-            # 执行命令
             result = subprocess.run(
                 command,
                 shell=True,
@@ -45,13 +69,13 @@ class BashTool(Tool):
                 output.append(f"[BashTool]: STDERR:\n{result.stderr}")
             
             if not output:
-                return f"[BashTool]: Command executed successfully with return code {result.returncode} (No output)."
+                return f"[BashTool]: 命令执行成功，返回码 {result.returncode}，无输出。"
             
             return "\n".join(output)
             
         except subprocess.TimeoutExpired:
-            return f"[BashTool]: Error: Command timed out after {timeout} seconds."
+            return f"[BashTool]: Error: 命令超时 ({timeout}s)。"
         except Exception as e:
-            return f"[BashTool]: Error occurred while executing command: {str(e)}"
+            return f"[BashTool]: Error: {str(e)}"
 
 
