@@ -31,9 +31,9 @@ class BashArgs(BaseModel):
     parameters=BashArgs,
 )
 class BashTool(Tool):
-    """
-    在宿主机环境中执行 shell 命令，附带安全护栏。
-    """
+    """在宿主机环境中执行 shell 命令，附带安全护栏。支持流式输出。"""
+
+    supports_streaming: bool = True
 
     def _check_safety(self, command: str) -> str | None:
         """检查命令是否安全，返回 None 表示通过，否则返回拒绝原因"""
@@ -43,7 +43,6 @@ class BashTool(Tool):
         return None
 
     def execute(self, command: str, timeout: int = 300) -> str:
-        # 1. 安全护栏
         block_reason = self._check_safety(command)
         if block_reason:
             return block_reason
@@ -58,21 +57,56 @@ class BashTool(Tool):
                 encoding='utf-8',
                 errors='replace'
             )
-            
+
             output = []
             if result.stdout:
                 output.append(f"[BashTool]: STDOUT:\n{result.stdout}")
             if result.stderr:
                 output.append(f"[BashTool]: STDERR:\n{result.stderr}")
-            
+
             if not output:
                 return f"[BashTool]: 命令执行成功，返回码 {result.returncode}，无输出。"
-            
+
             return "\n".join(output)
-            
+
         except subprocess.TimeoutExpired:
             return f"[BashTool]: Error: 命令超时 ({timeout}s)。"
         except Exception as e:
             return f"[BashTool]: Error: {str(e)}"
+
+    def stream_execute(self, command: str, timeout: int = 300):
+        """流式执行：边执行边产出 stdout 行，用户可以实时看到进度。
+
+        用 Popen + 逐行读取替代 subprocess.run，每次读到一行就 yield。
+        stderr 合并到 stdout 统一输出。
+        """
+        block_reason = self._check_safety(command)
+        if block_reason:
+            yield block_reason
+            return
+
+        try:
+            proc = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # 行缓冲
+            )
+
+            for line in proc.stdout:
+                yield line
+
+            proc.wait(timeout=timeout)
+            if proc.returncode != 0:
+                yield f"\n[退出码: {proc.returncode}]"
+
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            yield f"\n[命令超时 ({timeout}s)，已终止]"
+        except Exception as e:
+            yield f"\n[错误] {e}"
 
 

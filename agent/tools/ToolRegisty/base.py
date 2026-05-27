@@ -14,6 +14,17 @@ class Tool(ABC):
     # 声明该工具是否可在多线程环境下安全并发执行
     parallel_safe: bool = True
 
+    # 声明该工具是否支持流式输出（边执行边产出中间结果）
+    supports_streaming: bool = False
+
+    def stream_execute(self, **kwargs):
+        """流式执行工具，边执行边产出中间文本。
+
+        重写此方法的工具必须同时设置 supports_streaming = True。
+        子类不需要重写时直接调用 self.execute(**kwargs)。
+        """
+        yield self.execute(**kwargs)
+
     @property
     def name(self) -> str:
         """工具名称 —— 由 @tool 装饰器注入到 _tool_name"""

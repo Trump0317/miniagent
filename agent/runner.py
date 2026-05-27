@@ -230,14 +230,30 @@ class AgentRunner:
             if block_reason:
                 result = f"[拦截] {name}: {block_reason}"
             else:
-                try:
-                    result = self.tool_registry.call_tool(name, args)
-                except Exception as e:
-                    result = f"[错误] {name}: {e}"
+                tool = self.tool_registry.get_tool(name)
+                if tool and tool.supports_streaming:
+                    result = yield from self._run_streaming(tool, args)
+                else:
+                    try:
+                        result = self.tool_registry.call_tool(name, args)
+                    except Exception as e:
+                        result = f"[错误] {name}: {e}"
 
             # after hook
             result = apply_tool_result_hook(self.hooks, name, result)
             yield {"id": tc["id"], "result": self._truncate(result)}
+
+    def _run_streaming(self, tool, args: dict) -> str:
+        """流式执行工具，逐块产出中间文本，最后返回完整结果。"""
+        chunks: list[str] = []
+        try:
+            for chunk in tool.stream_execute(**args):
+                if chunk:
+                    chunks.append(str(chunk))
+                    yield str(chunk)
+        except Exception as e:
+            return f"[错误] {tool.name}: {e}"
+        return "".join(chunks)
 
     def _execute_parallel(self, tool_calls: list[dict]):
         from .hooks import apply_tool_call_hook, apply_tool_result_hook
@@ -256,10 +272,21 @@ class AgentRunner:
             if block_reason:
                 raw = f"[拦截] {name}: {block_reason}"
             else:
-                try:
-                    raw = self.tool_registry.call_tool(name, args)
-                except Exception as e:
-                    raw = f"[错误] {name}: {e}"
+                tool = self.tool_registry.get_tool(name)
+                if tool and tool.supports_streaming:
+                    chunks = []
+                    try:
+                        for chunk in tool.stream_execute(**args):
+                            if chunk:
+                                chunks.append(str(chunk))
+                        raw = "".join(chunks)
+                    except Exception as e:
+                        raw = f"[错误] {name}: {e}"
+                else:
+                    try:
+                        raw = self.tool_registry.call_tool(name, args)
+                    except Exception as e:
+                        raw = f"[错误] {name}: {e}"
             # after hook
             return tc["id"], name, apply_tool_result_hook(self.hooks, name, raw)
 
