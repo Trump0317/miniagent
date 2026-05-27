@@ -39,14 +39,23 @@ class AgentLoop:
         subregistry = ToolRegistry()
         subregistry.register(BashTool())
         subregistry.register(FileReadTool())
+        subregistry.register(FileWriteTool())
+        subregistry.register(FileEditTool())
+        subregistry.register(WebFetchTool())
+        subregistry.register(WebSearchTool())
+        subregistry.register(TodoWriteTool())
 
         registry.register(SubagentTool(
             client=client,
-            model=model, 
-            registry=subregistry, 
+            model=model,
+            registry=subregistry,
             token_tracker=self.token_tracker,
-            system_prompt="你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题，由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。",
-            max_turns=10
+            system_prompt=(
+                "你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题。"
+                "由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。"
+            ),
+            max_turns=15,
+            sub_model="deepseek-v4-flash"  # 子代理默认用轻量模型，节省成本
         ))
 
         # 系统提示词，目前硬编码
