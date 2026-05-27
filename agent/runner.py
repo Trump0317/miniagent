@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .conversation import Conversation
     from .tools.ToolRegisty.registry import ToolRegistry
     from .tokentracker import TokenTracker
+    from .hooks import EventHooks
 
 # 工具结果截断参数
 MAX_RESULT_BYTES = 50 * 1024
@@ -36,6 +37,7 @@ class AgentRunner:
         tool_registry: ToolRegistry | None = None,
         conversation: Conversation | None = None,
         token_tracker: TokenTracker | None = None,
+        hooks: EventHooks | None = None,
         max_turns: int | None = None,
         max_tokens: int = 20000,
     ):
@@ -45,6 +47,7 @@ class AgentRunner:
         self.tool_registry = tool_registry
         self.conversation = conversation
         self._token_tracker = token_tracker
+        self.hooks = hooks
         self.max_turns = max_turns
 
     # ── 公共入口 ──
@@ -215,35 +218,55 @@ class AgentRunner:
             yield from self._execute_serial(tool_calls)
 
     def _execute_serial(self, tool_calls: list[dict]):
+        from .hooks import apply_tool_call_hook, apply_tool_result_hook
+
         for tc in tool_calls:
             name = tc["function"]["name"]
             args = self._parse_args(tc)
             yield f"[执行工具: {name}...]\n"
-            try:
-                result = self.tool_registry.call_tool(name, args)
-            except Exception as e:
-                result = f"[错误] {name}: {e}"
+
+            # before hook
+            args, block_reason = apply_tool_call_hook(self.hooks, name, args)
+            if block_reason:
+                result = f"[拦截] {name}: {block_reason}"
+            else:
+                try:
+                    result = self.tool_registry.call_tool(name, args)
+                except Exception as e:
+                    result = f"[错误] {name}: {e}"
+
+            # after hook
+            result = apply_tool_result_hook(self.hooks, name, result)
             yield {"id": tc["id"], "result": self._truncate(result)}
 
     def _execute_parallel(self, tool_calls: list[dict]):
+        from .hooks import apply_tool_call_hook, apply_tool_result_hook
+
         count = len(tool_calls)
         workers = min(count, MAX_PARALLEL_TOOLS)
         yield f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"
 
         results: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {}
-            for tc in tool_calls:
-                name = tc["function"]["name"]
-                args = self._parse_args(tc)
-                futures[pool.submit(self.tool_registry.call_tool, name, args)] = (tc["id"], name)
 
-            for future in as_completed(futures):
-                tc_id, name = futures[future]
+        def _run_one(tc):
+            name = tc["function"]["name"]
+            args = self._parse_args(tc)
+            # before hook
+            args, block_reason = apply_tool_call_hook(self.hooks, name, args)
+            if block_reason:
+                raw = f"[拦截] {name}: {block_reason}"
+            else:
                 try:
-                    raw = future.result()
+                    raw = self.tool_registry.call_tool(name, args)
                 except Exception as e:
                     raw = f"[错误] {name}: {e}"
+            # after hook
+            return tc["id"], name, apply_tool_result_hook(self.hooks, name, raw)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_run_one, tc): tc for tc in tool_calls}
+            for future in as_completed(futures):
+                tc_id, name, raw = future.result()
                 results[tc_id] = self._truncate(raw)
                 yield f"[{name}] ✓\n"
 
