@@ -27,7 +27,7 @@ class Agent:
         skills = SkillsLoader(skill_directory=cfg.skills_dir)
 
         # ── Agent 定义 ──
-        agent_loader = AgentLoader(cfg.root / "agents")
+        agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
 
         # ── 记忆系统 ──
         memory = AgentMemory(
