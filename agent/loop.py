@@ -60,14 +60,14 @@ class Agent:
 
     def _build_system_prompt(self, skills: SkillsLoader, memory: AgentMemory) -> str:
         return f"""
-你是一个智能助手，可以使用各种工具来帮助用户完成任务。
-### 可用技能列表
-{skills.get_description()}
-### 长期记忆（最近摘要）
-{memory.brief_context()}
-### 用户偏好（USER.md）
-{"\n".join(memory.user_preferences()) or "（当前没有用户偏好）"}
-""".strip()
+        你是一个智能助手，可以使用各种工具来帮助用户完成任务。
+        ### 可用技能列表
+        {skills.get_description()}
+        ### 长期记忆（最近摘要）
+        {memory.brief_context()}
+        ### 用户偏好（USER.md）
+        {"\n".join(memory.user_preferences()) or "（当前没有用户偏好）"}
+        """.strip()
 
     def _build_registry(self, skills: SkillsLoader, client) -> ToolRegistry:
         cfg = self.config

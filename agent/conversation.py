@@ -1,9 +1,11 @@
 """对话状态管理 —— 统一管理历史记录、记忆压缩和 token 统计。"""
 
 from __future__ import annotations
-from typing import Any
-from pathlib import Path
-from openai import OpenAI
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .memory import AgentMemory
+    from .tokentracker import TokenTracker
 
 
 class Conversation:
@@ -15,8 +17,8 @@ class Conversation:
 
     def __init__(
         self,
-        memory: Any,           # AgentMemory 实例
-        token_tracker: Any,    # TokenTracker 实例
+        memory: AgentMemory,
+        token_tracker: TokenTracker,
         system_prompt: str,
         max_context: int = 200_000,
         compact_threshold: float = 0.7,

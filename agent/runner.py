@@ -8,7 +8,12 @@ from __future__ import annotations
 from openai import OpenAI
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import TYPE_CHECKING, Generator
+
+if TYPE_CHECKING:
+    from .conversation import Conversation
+    from .tools.ToolRegisty.registry import ToolRegistry
+    from .tokentracker import TokenTracker
 
 # 工具结果截断参数
 MAX_RESULT_BYTES = 50 * 1024
@@ -28,9 +33,9 @@ class AgentRunner:
         self,
         client: OpenAI,
         model: str,
-        tool_registry: Any | None = None,
-        conversation: Any | None = None,  # Conversation 实例（主循环模式）
-        token_tracker: Any | None = None,  # TokenTracker（子代理独立模式）
+        tool_registry: ToolRegistry | None = None,
+        conversation: Conversation | None = None,
+        token_tracker: TokenTracker | None = None,
         max_turns: int | None = None,
         max_tokens: int = 20000,
     ):
@@ -160,7 +165,7 @@ class AgentRunner:
         else:
             history.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
-    def _record_tokens(self, usage: Any) -> None:
+    def _record_tokens(self, usage) -> None:
         if self.conversation:
             self.conversation.record_tokens(self.model, usage)
         elif self._token_tracker:
@@ -178,7 +183,7 @@ class AgentRunner:
 
     # ── 工具执行 ──
 
-    def _execute_tools(self, tool_calls: list[dict]):
+    def _execute_tools(self, tool_calls: list[dict]) -> Generator[str | dict, None, None]:
         """执行工具调用。
 
         策略：

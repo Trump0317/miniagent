@@ -1,7 +1,8 @@
+from __future__ import annotations
 from pydantic import BaseModel, Field
 from agent.tools.ToolRegisty.base import Tool, tool
 from agent.tools.ToolRegisty.registry import ToolRegistry
-from typing import Type, Any, Optional, List
+from typing import Type, Optional, List, TYPE_CHECKING
 from openai import OpenAI
 from copy import deepcopy
 from pathlib import Path
@@ -9,6 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 import threading
+
+if TYPE_CHECKING:
+    from agent.tokentracker import TokenTracker
 
 
 class TaskItem(BaseModel):
@@ -35,7 +39,7 @@ class SubagentTool(Tool):
                  client: OpenAI, 
                  model: str, 
                  registry: ToolRegistry, 
-                 token_tracker: Any = None,
+                 token_tracker: TokenTracker | None = None,
                  system_prompt: str = "你是一个高效的子代理任务执行者。请根据用户的任务要求，利用可用工具完成并给出结论。",
                  max_turns: int = 10,
                  sub_model: Optional[str] = None):
