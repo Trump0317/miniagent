@@ -1,4 +1,4 @@
-from agent.loop import AgentLoop
+from agent.loop import Agent
 
 if __name__ == "__main__":
-    AgentLoop().run()
+    Agent().run()

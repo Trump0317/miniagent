@@ -38,9 +38,6 @@ class TodoWriteArgs(BaseModel):
 class TodoWriteTool(Tool):
     _STATUS_ICON = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
 
-    name: str
-    description: str
-    args_model: Type[TodoWriteArgs]
     parallel_safe: bool = False  # self.todos 是有状态列表，多线程并发会数据竞争
 
     def __init__(self):

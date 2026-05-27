@@ -1,5 +1,3 @@
-from .loop import AgentLoop
+from .loop import Agent
 
-__all__ = [
-    "AgentLoop",
-]
+__all__ = ["Agent"]

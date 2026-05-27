@@ -16,9 +16,6 @@ class SkillArgs(BaseModel):
     parameters=SkillArgs,
 )
 class SkillTool(Tool):
-    name: str
-    description: str
-    args_model: Type[SkillArgs]
 
     def __init__(self, skills_loader: SkillsLoader) -> None:
         self.skills_loader = skills_loader

@@ -15,9 +15,6 @@ class WebSearchArgs(BaseModel):
     parameters=WebSearchArgs,
 )
 class WebSearchTool(Tool):
-    name: str 
-    description: str
-    args_model: Type[WebSearchArgs]
 
     def execute(self, query: str, max_results: int = 5) -> str:
         try:

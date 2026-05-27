@@ -14,9 +14,6 @@ class FileWriteArgs(BaseModel):
     parameters=FileWriteArgs,
 )
 class FileWriteTool(Tool):
-    name: str
-    description: str
-    args_model: Type[FileWriteArgs]
 
     def execute(self, file_path: str, content: str) -> str:
         try:

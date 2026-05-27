@@ -14,9 +14,6 @@ class FileReadArgs(BaseModel):
     parameters=FileReadArgs,
 )
 class FileReadTool(Tool):
-    name: str
-    description: str
-    args_model: Type[FileReadArgs]
 
     def execute(self, file_path: str, encoding: str = "utf-8") -> str:
         try:

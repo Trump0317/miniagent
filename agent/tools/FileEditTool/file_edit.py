@@ -14,9 +14,6 @@ class FileEditArgs(BaseModel):
     parameters=FileEditArgs,
 )
 class FileEditTool(Tool):
-    name: str
-    description: str
-    args_model: Type[FileEditArgs]
 
     # ── 匹配策略 ──
 

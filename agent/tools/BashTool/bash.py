@@ -34,9 +34,6 @@ class BashTool(Tool):
     """
     在宿主机环境中执行 shell 命令，附带安全护栏。
     """
-    name: str
-    description: str
-    args_model: Type[BashArgs]
 
     def _check_safety(self, command: str) -> str | None:
         """检查命令是否安全，返回 None 表示通过，否则返回拒绝原因"""

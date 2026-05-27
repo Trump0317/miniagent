@@ -14,9 +14,6 @@ class WebFetchArgs(BaseModel):
     parameters=WebFetchArgs,
 )
 class WebFetchTool(Tool):
-    name: str 
-    description: str 
-    args_model: Type[WebFetchArgs] 
 
     def run(self, args: WebFetchArgs) -> str:
         """实现 Tool 的 run 方法"""

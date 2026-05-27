@@ -1,31 +1,78 @@
-from openai import OpenAI
-from dotenv import load_dotenv
-import os
+"""Agent 主入口 —— 组装配置、记忆、工具和运行器，启动交互循环。"""
+
+from __future__ import annotations
 from pathlib import Path
+from .config import AppConfig
+from .conversation import Conversation
 from .runner import AgentRunner
 from .memory import AgentMemory
 from .tokentracker import TokenTracker
 from .tools import (
-    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool, WebSearchTool,
-    SkillTool, SkillsLoader, TodoWriteTool, SubagentTool
+    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool,
+    WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
 )
 
-class AgentLoop:
-    def __init__(self, root: Path | None = None, model: str = "deepseek-v4-flash"):
-        # 加载 .env 文件
-        load_dotenv()
-        # 设置项目的根目录
-        root = root or Path(__file__).parent.parent
-        # 初始化模型客户端
-        client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url=os.getenv("DEEPSEEK_API_BASE_URL")
+
+class Agent:
+    """Agent 应用 —— 将配置、状态和执行引擎组装在一起。"""
+
+    def __init__(self, config: AppConfig | None = None):
+        self.config = config or AppConfig.from_env()
+        cfg = self.config
+        root = cfg.root
+        client = cfg.create_client()
+
+        # ── 技能 ──
+        skills = SkillsLoader(skill_directory=cfg.skills_dir)
+
+        # ── 记忆系统 ──
+        memory = AgentMemory(
+            memory_dir=cfg.memory_dir, client=client, model=cfg.model
         )
-        # 预加载技能摘要
-        skills_loader = SkillsLoader(skill_directory=root / "skills")
-        self.memory = AgentMemory(memory_dir=root /"agent"/ ".memory", client=client, model=model)
-        self.token_tracker = TokenTracker(log_file=root / "agent" / ".memory" / "tokens.jsonl")
-        # 注册工具
+        tracker = TokenTracker(log_file=Path(cfg.memory_dir) / "tokens.jsonl")
+
+        # ── 系统提示词 ──
+        system_prompt = self._build_system_prompt(skills, memory)
+
+        # ── 对话状态 ──
+        self.conversation = Conversation(
+            memory=memory,
+            token_tracker=tracker,
+            system_prompt=system_prompt,
+            max_context=cfg.max_context,
+            compact_threshold=cfg.compact_threshold,
+        )
+
+        # ── 工具注册 ──
+        registry = self._build_registry(skills, client)
+
+        # ── 执行引擎 ──
+        self.runner = AgentRunner(
+            client=client,
+            model=cfg.model,
+            tool_registry=registry,
+            conversation=self.conversation,
+            max_turns=cfg.max_turns,
+            max_tokens=cfg.max_tokens,
+        )
+
+    # ── 构造方法 ──
+
+    def _build_system_prompt(self, skills: SkillsLoader, memory: AgentMemory) -> str:
+        return f"""
+你是一个智能助手，可以使用各种工具来帮助用户完成任务。
+### 可用技能列表
+{skills.get_description()}
+### 长期记忆（最近摘要）
+{memory.brief_context()}
+### 用户偏好（USER.md）
+{"\n".join(memory.user_preferences()) or "（当前没有用户偏好）"}
+""".strip()
+
+    def _build_registry(self, skills: SkillsLoader, client) -> ToolRegistry:
+        cfg = self.config
+
+        # 主工具注册表
         registry = ToolRegistry()
         registry.register(BashTool())
         registry.register(FileReadTool())
@@ -33,77 +80,61 @@ class AgentLoop:
         registry.register(FileEditTool())
         registry.register(WebFetchTool())
         registry.register(WebSearchTool())
-        registry.register(SkillTool(skills_loader))
+        registry.register(SkillTool(skills))
         registry.register(TodoWriteTool())
 
-        subregistry = ToolRegistry()
-        subregistry.register(BashTool())
-        subregistry.register(FileReadTool())
-        subregistry.register(FileWriteTool())
-        subregistry.register(FileEditTool())
-        subregistry.register(WebFetchTool())
-        subregistry.register(WebSearchTool())
-        subregistry.register(TodoWriteTool())
+        # 子代理注册表（独立拷贝）
+        sub = ToolRegistry()
+        sub.register(BashTool())
+        sub.register(FileReadTool())
+        sub.register(FileWriteTool())
+        sub.register(FileEditTool())
+        sub.register(WebFetchTool())
+        sub.register(WebSearchTool())
+        sub.register(TodoWriteTool())
 
         registry.register(SubagentTool(
             client=client,
-            model=model,
-            registry=subregistry,
-            token_tracker=self.token_tracker,
+            model=cfg.model,
+            registry=sub,
+            token_tracker=self.conversation.token_tracker,
             system_prompt=(
                 "你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题。"
                 "由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。"
             ),
-            max_turns=15,
-            sub_model="deepseek-v4-flash"  # 子代理默认用轻量模型，节省成本
+            max_turns=cfg.subagent_max_turns,
+            sub_model=cfg.subagent_model,
         ))
 
-        # 系统提示词，目前硬编码
-        system_prompt=f"""
-        你是一个智能助手，可以使用各种工具来帮助用户完成任务。
-        ### 可用技能列表 {skills_loader.get_description()} ###
-        ### 长期记忆（最近摘要） ###
-        {self.memory.brief_context()}
-        ### 用户偏好（USER.md） ###
-        {"\n".join(self.memory.user_preferences()) or "（当前没有用户偏好）"}
-        """
-        # 历史对话记录
-        system_msg = {"role": "system", "content": system_prompt}
-        self.memory.append_history(system_msg)
+        return registry
 
-        self.runner = AgentRunner(
-            client=client,
-            model=model,
-            tool_registry=registry,
-            memory=self.memory,
-            token_tracker=self.token_tracker
-        )
+    # ── 主循环 ──
 
-        
     def run(self) -> None:
-        """主循环，持续接受用户输入并生成回复"""
+        """交互式主循环"""
         while True:
             user_input = input("[You] : ")
             command = user_input.strip()
             if command.lower() in {"exit", "quit"}:
-                # 打印 Token 统计
-                stats = self.token_tracker.stats_by_model()
-                if stats:
-                    print("\n[Tokens] 本次会话 Token 消耗统计:")
-                    for m, s in stats.items():
-                        print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
-
-                result = self.memory.compact()
-                if result.get("summary") or result.get("preferences"):
-                    print("[Memory] 已自动压缩并保存本次会话记录")
-                print("退出对话")
+                self._shutdown()
                 break
-            msg = {"role": "user", "content": command}
-            self.memory.append_history(msg)
-            
+
+            self.conversation.add_user_message(command)
+
             print("[Assistant] : ", end="", flush=True)
-            for chunk in self.runner.step(self.memory.history):
+            for chunk in self.runner.step(self.conversation.history):
                 print(chunk, end="", flush=True)
             print("\n")
 
+    def _shutdown(self) -> None:
+        """退出前：打印统计、压缩记忆"""
+        stats = self.conversation.token_stats()
+        if stats:
+            print("\n[Tokens] 本次会话 Token 消耗统计:")
+            for m, s in stats.items():
+                print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
 
+        result = self.conversation.compact()
+        if result.get("summary") or result.get("preferences"):
+            print("[Memory] 已自动压缩并保存本次会话记录")
+        print("退出对话")
