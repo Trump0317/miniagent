@@ -13,12 +13,14 @@ import threading
 
 if TYPE_CHECKING:
     from agent.tokentracker import TokenTracker
+    from .loader import AgentLoader, AgentDefinition
 
 
 class TaskItem(BaseModel):
     task: str = Field(description="交给子代理的具体任务。")
 
 class SubagentArgs(BaseModel):
+    agent: Optional[str] = Field(default=None, description="要使用的子代理名称（对应 agents/*.md 定义文件）。不指定则使用默认子代理。")
     task: Optional[str] = Field(default=None, description="交给子代理的具体任务（单模式）。")
     tasks: Optional[List[TaskItem]] = Field(default=None, description="并行任务列表。")
     chain: Optional[List[TaskItem]] = Field(default=None, description="链式任务列表，支持 {previous} 占位符引用前一步的输出。")
@@ -35,23 +37,63 @@ class SubagentArgs(BaseModel):
     parameters=SubagentArgs,
 )
 class SubagentTool(Tool):
-    def __init__(self, 
-                 client: OpenAI, 
-                 model: str, 
-                 registry: ToolRegistry, 
+    parallel_safe: bool = True  # 每个子代理独立上下文，线程安全
+
+    def __init__(self,
+                 client: OpenAI,
+                 model: str,
+                 registry: ToolRegistry,
                  token_tracker: TokenTracker | None = None,
+                 agent_loader: AgentLoader | None = None,
                  system_prompt: str = "你是一个高效的子代理任务执行者。请根据用户的任务要求，利用可用工具完成并给出结论。",
                  max_turns: int = 10,
                  sub_model: Optional[str] = None):
         self._client = client
-        self._model = sub_model or model          # 子代理可用独立模型
+        self._model = sub_model or model          # 子代理默认模型
         self._registry = deepcopy(registry)        # 深拷贝，状态隔离
-        self._system_prompt = system_prompt
-        self._max_turns = max_turns
-        # token_tracker 只在记录子代理概览 token 时使用
-        self._parent_tracker = token_tracker
-        # 并行模式下的打印锁，防止输出交错
+        self._agent_loader = agent_loader          # Agent 定义加载器
+        self._default_system_prompt = system_prompt
+        self._default_max_turns = max_turns
+        self._token_tracker = token_tracker
         self._print_lock = threading.Lock()
+
+    def _resolve_agent(self, agent_name: str | None) -> tuple[str, str, int, ToolRegistry]:
+        """根据 agent_name 解析子代理配置。
+
+        返回 (system_prompt, model, max_turns, tool_registry)。
+        如果 agent_name 为 None，使用默认配置。
+        """
+        if agent_name and self._agent_loader:
+            definition = self._agent_loader.get(agent_name)
+            if definition:
+                return (
+                    definition.system_prompt,
+                    definition.model or self._model,
+                    definition.max_turns,
+                    self._filter_registry(definition),
+                )
+        # 默认配置
+        return (
+            self._default_system_prompt,
+            self._model,
+            self._default_max_turns,
+            self._registry,
+        )
+
+    def _filter_registry(self, definition: AgentDefinition) -> ToolRegistry:
+        """根据 AgentDefinition.tools 过滤工具注册表。
+
+        tools 为空 → 返回完整注册表（所有工具）。
+        tools 有值 → 只保留指定的工具。
+        """
+        if not definition.tools:
+            return self._registry
+        filtered = ToolRegistry()
+        for tool_name in definition.tools:
+            tool = self._registry.get_tool(tool_name)
+            if tool:
+                filtered.register(tool)
+        return filtered
 
     @property
     def name(self) -> str:
@@ -69,6 +111,7 @@ class SubagentTool(Tool):
     # 公共入口：根据参数决定走哪个模式
     # ──────────────────────────────────────────
     def execute(self, task: Optional[str] = None,
+                agent: Optional[str] = None,
                 tasks: Optional[List[TaskItem]] = None,
                 chain: Optional[List[TaskItem]] = None,
                 max_parallel: int = 4) -> str:
@@ -80,30 +123,32 @@ class SubagentTool(Tool):
         if sum([has_task, has_tasks, has_chain]) != 1:
             return "[SubagentTool]: 请只提供 task、tasks 或 chain 其中之一。"
 
+        cfg = self._resolve_agent(agent)
+
         if has_task:
-            return self._run_single(task)
+            return self._run_single(task, cfg)
         elif has_tasks:
-            return self._run_parallel(tasks, max_parallel)
+            return self._run_parallel(tasks, max_parallel, cfg)
         else:
-            return self._run_chain(chain)
+            return self._run_chain(chain, cfg)
 
     # ──────────────────────────────────────────
     # 单代理模式
     # ──────────────────────────────────────────
-    def _run_single(self, task: str) -> str:
-        summary, sub_tokens = self._run_one(task, label="子代理")
+    def _run_single(self, task: str, cfg: tuple) -> str:
+        summary, sub_tokens = self._run_one(task, cfg, label="子代理")
         return self._format_result("单", task, summary, sub_tokens)
 
     # ──────────────────────────────────────────
     # 并行模式
     # ──────────────────────────────────────────
-    def _run_parallel(self, tasks: List[TaskItem], max_parallel: int) -> str:
+    def _run_parallel(self, tasks: List[TaskItem], max_parallel: int, cfg: tuple) -> str:
         start = time.time()
         results: list[tuple[int, str, dict]] = []  # (index, summary, tokens)
 
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             futures = {
-                pool.submit(self._run_one, t.task, f"子代理{i+1}"): i
+                pool.submit(self._run_one, t.task, cfg, f"子代理{i+1}"): i
                 for i, t in enumerate(tasks)
             }
             for future in as_completed(futures):
@@ -138,13 +183,13 @@ class SubagentTool(Tool):
     # ──────────────────────────────────────────
     # 链式模式
     # ──────────────────────────────────────────
-    def _run_chain(self, chain: List[TaskItem]) -> str:
+    def _run_chain(self, chain: List[TaskItem], cfg: tuple) -> str:
         previous_output = ""
         all_results: list[dict] = []
 
         for i, step in enumerate(chain):
             task_with_context = step.task.replace("{previous}", previous_output)
-            summary, tokens = self._run_one(task_with_context, label=f"链式-步骤{i+1}")
+            summary, tokens = self._run_one(task_with_context, cfg, label=f"链式-步骤{i+1}")
             all_results.append({
                 "step": i + 1,
                 "task": step.task[:60],
@@ -167,14 +212,15 @@ class SubagentTool(Tool):
     # ──────────────────────────────────────────
     # 核心：运行一个子代理
     # ──────────────────────────────────────────
-    def _run_one(self, task: str, label: str = "子代理") -> tuple[str, dict]:
-        """返回 (summary, token_stats_dict)"""
+    def _run_one(self, task: str, cfg: tuple, label: str = "子代理") -> tuple[str, dict]:
+        """cfg = (system_prompt, model, max_turns, tool_registry)"""
+        system_prompt, agent_model, max_turns, tool_registry = cfg
         from agent.runner import AgentRunner
         from agent.tokentracker import TokenTracker
 
         # 1. 独立的上下文和独立的 token tracker
         history = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": task}
         ]
         sub_tracker = TokenTracker(
@@ -184,10 +230,10 @@ class SubagentTool(Tool):
         # 2. 独立的 Runner 实例
         runner = AgentRunner(
             client=self._client,
-            model=self._model,
-            tool_registry=self._registry,
-            token_tracker=sub_tracker,    # 独立 tracker
-            max_turns=self._max_turns
+            model=agent_model,
+            tool_registry=deepcopy(tool_registry),
+            token_tracker=sub_tracker,
+            max_turns=max_turns
         )
 
         result_content = []
@@ -239,8 +285,8 @@ class SubagentTool(Tool):
             total_output = sum(s["output"] for s in token_stats.values())
 
             # 子代理的 token 用量也记录到父 tracker（方便最终统计）
-            if self._parent_tracker:
-                self._parent_tracker.record(f"subagent:{self._model}", type("Usage", (), {
+            if self._token_tracker:
+                self._token_tracker.record(f"subagent:{agent_model}", type("Usage", (), {
                     "prompt_tokens": total_input,
                     "completion_tokens": total_output,
                     "prompt_cache_hit_tokens": 0,

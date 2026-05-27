@@ -11,6 +11,7 @@ from .tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool,
     WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
 )
+from .tools.SubagentTool.loader import AgentLoader
 
 
 class Agent:
@@ -25,6 +26,9 @@ class Agent:
         # ── 技能 ──
         skills = SkillsLoader(skill_directory=cfg.skills_dir)
 
+        # ── Agent 定义 ──
+        agent_loader = AgentLoader(cfg.root / "agents")
+
         # ── 记忆系统 ──
         memory = AgentMemory(
             memory_dir=cfg.memory_dir, client=client, model=cfg.model
@@ -32,7 +36,7 @@ class Agent:
         tracker = TokenTracker(log_file=Path(cfg.memory_dir) / "tokens.jsonl")
 
         # ── 系统提示词 ──
-        system_prompt = self._build_system_prompt(skills, memory)
+        system_prompt = self._build_system_prompt(skills, memory, agent_loader)
 
         # ── 对话状态 ──
         self.conversation = Conversation(
@@ -45,7 +49,7 @@ class Agent:
         )
 
         # ── 工具注册 ──
-        registry = self._build_registry(skills, client)
+        registry = self._build_registry(skills, client, agent_loader)
 
         # ── 执行引擎 ──
         self.runner = AgentRunner(
@@ -59,18 +63,20 @@ class Agent:
 
     # ── 构造方法 ──
 
-    def _build_system_prompt(self, skills: SkillsLoader, memory: AgentMemory) -> str:
+    def _build_system_prompt(self, skills: SkillsLoader, memory: AgentMemory, agent_loader: AgentLoader) -> str:
         return f"""
         你是一个智能助手，可以使用各种工具来帮助用户完成任务。
         ### 可用技能列表
         {skills.get_description()}
+        ### 可用子代理
+        {agent_loader.list_agents()}
         ### 长期记忆（最近摘要）
         {memory.brief_context()}
         ### 用户偏好（USER.md）
         {"\n".join(memory.user_preferences()) or "（当前没有用户偏好）"}
         """.strip()
 
-    def _build_registry(self, skills: SkillsLoader, client) -> ToolRegistry:
+    def _build_registry(self, skills: SkillsLoader, client, agent_loader: AgentLoader) -> ToolRegistry:
         cfg = self.config
 
         # 主工具注册表
@@ -99,6 +105,7 @@ class Agent:
             model=cfg.model,
             registry=sub,
             token_tracker=self.conversation.token_tracker,
+            agent_loader=agent_loader,
             system_prompt=(
                 "你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题。"
                 "由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。"
