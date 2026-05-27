@@ -41,6 +41,7 @@ class TodoWriteTool(Tool):
     name: str
     description: str
     args_model: Type[TodoWriteArgs]
+    parallel_safe: bool = False  # self.todos 是有状态列表，多线程并发会数据竞争
 
     def __init__(self):
         """初始化空的待办列表。"""

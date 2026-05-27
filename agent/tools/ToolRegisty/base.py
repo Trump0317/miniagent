@@ -10,6 +10,10 @@ class Tool(ABC):
     使用 Pydantic 进行参数校验和转换。
     """
 
+    # 声明该工具是否可在多线程环境下安全并发执行。
+    # 有可变内部状态（如 TodoWriteTool.todos）或操作共享资源的工具设为 False。
+    parallel_safe: bool = True
+
     @property
     @abstractmethod
     def name(self) -> str:

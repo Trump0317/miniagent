@@ -182,52 +182,80 @@ class AgentRunner:
             continue
 
     def _execute_tools(self, tool_calls: list[dict]):
-        """执行工具调用。单工具串行执行，多工具并行执行。
+        """执行工具调用。
         
-        并行策略：
-        - 工具之间无依赖（OpenAI 的 parallel_tool_calls 模式），可以并发
-        - 用 ThreadPoolExecutor 控制并发数，避免系统过载
-        - as_completed 让先完成的先报告，用户不用等最慢的那个
+        策略：
+        - 单工具：直接串行。
+        - 多工具且全部标记 parallel_safe=True → 并行执行。
+        - 多工具但有任一个 parallel_safe=False → 全部串行执行。
+          （混合不安全工具时不能部分并行，因为 LLM 可能依赖工具执行顺序）
         """
-        if len(tool_calls) == 1:
-            # 单工具：保持原有流程
-            tc = tool_calls[0]
+        count = len(tool_calls)
+        if count == 1:
+            yield from self._execute_serial(tool_calls)
+            return
+
+        # 检查是否全部工具都声明了 parallel_safe
+        all_safe = all(
+            self.tool_registry.get_tool(tc["function"]["name"]).parallel_safe
+            for tc in tool_calls
+            if self.tool_registry.get_tool(tc["function"]["name"])
+        )
+
+        if all_safe:
+            yield from self._execute_parallel(tool_calls)
+        else:
+            # 有不安全的工具，全部串行以保证顺序和状态一致性
+            unsafe_names = [
+                tc["function"]["name"]
+                for tc in tool_calls
+                if self.tool_registry.get_tool(tc["function"]["name"])
+                and not self.tool_registry.get_tool(tc["function"]["name"]).parallel_safe
+            ]
+            yield f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n"
+            yield from self._execute_serial(tool_calls)
+
+    def _execute_serial(self, tool_calls: list[dict]):
+        """串行执行工具列表"""
+        for tc in tool_calls:
             func_name = tc["function"]["name"]
             args = self._parse_tool_args(tc)
-            yield f"\n[执行工具: {func_name}...]\n"
+            yield f"[执行工具: {func_name}...]\n"
             try:
                 result = self.tool_registry.call_tool(func_name, args)
             except Exception as e:
                 result = f"[错误] {func_name}: {e}"
             yield {"id": tc["id"], "result": self._truncate_result(result)}
-        else:
-            # 多工具：并行执行
-            count = len(tool_calls)
-            workers = min(count, MAX_PARALLEL_TOOLS)
-            yield f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"
 
-            results: dict[str, str] = {}
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {}
-                for tc in tool_calls:
-                    func_name = tc["function"]["name"]
-                    args = self._parse_tool_args(tc)
-                    future = pool.submit(self.tool_registry.call_tool, func_name, args)
-                    futures[future] = (tc["id"], func_name)
+    def _execute_parallel(self, tool_calls: list[dict]):
+        """并行执行工具列表（调用方保证全部 parallel_safe）"""
+        count = len(tool_calls)
+        workers = min(count, MAX_PARALLEL_TOOLS)
+        yield f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"
 
-                for future in as_completed(futures):
-                    tc_id, func_name = futures[future]
-                    try:
-                        raw_result = future.result()
-                    except Exception as e:
-                        raw_result = f"[错误] {func_name}: {e}"
-                    results[tc_id] = self._truncate_result(raw_result)
-                    yield f"[{func_name}] ✓\n"
-
+        results: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {}
             for tc in tool_calls:
-                tc_id = tc["id"]
-                if tc_id in results:
-                    yield {"id": tc_id, "result": results[tc_id]}
+                func_name = tc["function"]["name"]
+                args = self._parse_tool_args(tc)
+                future = pool.submit(self.tool_registry.call_tool, func_name, args)
+                futures[future] = (tc["id"], func_name)
+
+            for future in as_completed(futures):
+                tc_id, func_name = futures[future]
+                try:
+                    raw_result = future.result()
+                except Exception as e:
+                    raw_result = f"[错误] {func_name}: {e}"
+                results[tc_id] = self._truncate_result(raw_result)
+                yield f"[{func_name}] ✓\n"
+
+        # 按原始顺序返回结果
+        for tc in tool_calls:
+            tc_id = tc["id"]
+            if tc_id in results:
+                yield {"id": tc_id, "result": results[tc_id]}
 
     def _maybe_compact(self) -> None:
         """如果 token 用量超过阈值，自动触发记忆压缩。"""
