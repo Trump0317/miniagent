@@ -18,7 +18,12 @@ from .prompts import PromptLoader
 class Agent:
     """Agent 应用 —— 将配置、状态和执行引擎组装在一起。"""
 
-    def __init__(self, config: AppConfig | None = None):
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        thinking: str | None = None,
+        context_files: str = "",
+    ):
         self.config = config or AppConfig.from_env()
         cfg = self.config
         root = cfg.root
@@ -40,7 +45,9 @@ class Agent:
         tracker = TokenTracker(log_file=Path(cfg.memory_dir) / "tokens.jsonl")
 
         # ── 系统提示词 ──
-        system_prompt = self._build_system_prompt(skills, memory, agent_loader, self.prompt_loader)
+        system_prompt = self._build_system_prompt(
+            skills, memory, agent_loader, self.prompt_loader, context_files
+        )
 
         # ── 对话状态 ──
         self.conversation = Conversation(
@@ -63,21 +70,34 @@ class Agent:
             conversation=self.conversation,
             max_turns=cfg.max_turns,
             max_tokens=cfg.max_tokens,
+            thinking=thinking,
         )
 
     # ── 构造方法 ──
 
-    def _build_system_prompt(self, skills: SkillsLoader, memory: AgentMemory, agent_loader: AgentLoader, prompt_loader: PromptLoader) -> str:
+    def _build_system_prompt(
+        self,
+        skills: SkillsLoader,
+        memory: AgentMemory,
+        agent_loader: AgentLoader,
+        prompt_loader: PromptLoader,
+        context_files: str = "",
+    ) -> str:
         commands = prompt_loader.list_commands()
-        return (
-            "你是一个智能助手，可以使用各种工具来帮助用户完成任务。\n"
-            f"### 可用技能列表\n{skills.get_description()}\n"
-            f"### 可用子代理\n{agent_loader.list_agents()}\n"
-            f"### 可用命令\n{commands or '（无）'}\n"
-            f"### 长期记忆（最近摘要）\n{memory.brief_context()}\n"
+        parts = [
+            "你是一个智能助手，可以使用各种工具来帮助用户完成任务。",
+        ]
+        if context_files:
+            parts.append(f"### 项目上下文\n{context_files}")
+        parts.append(f"### 可用技能列表\n{skills.get_description()}")
+        parts.append(f"### 可用子代理\n{agent_loader.list_agents()}")
+        parts.append(f"### 可用命令\n{commands or '（无）'}")
+        parts.append(f"### 长期记忆（最近摘要）\n{memory.brief_context()}")
+        parts.append(
             f"### 用户偏好（USER.md）\n"
             + ("\n".join(memory.user_preferences()) or "（当前没有用户偏好）")
         )
+        return "\n\n".join(parts)
 
     def _build_registry(self, skills: SkillsLoader, client, agent_loader: AgentLoader) -> ToolRegistry:
         cfg = self.config
@@ -119,14 +139,46 @@ class Agent:
 
         return registry
 
-    # ── 主循环 ──
+    # ── 运行入口 ──
 
-    def run(self) -> None:
+    def run(self, initial_message: str = "", print_mode: bool = False) -> None:
+        """启动 agent。
+
+        print_mode=True: 处理 initial_message 后打印结果并退出。
+        print_mode=False: 进入交互式循环。
+        """
+        if print_mode:
+            self._run_print_mode(initial_message)
+        else:
+            self._run_interactive(initial_message)
+
+    def _run_print_mode(self, msg: str) -> None:
+        """非交互模式：处理一条消息，输出结果后退出。"""
+        msg = self._expand_command(msg)
+        self.conversation.add_user_message(msg)
+
+        for chunk in self.runner.step(self.conversation.history):
+            print(chunk, end="", flush=True)
+        print()
+
+        self._shutdown()
+
+    def _run_interactive(self, initial_message: str = "") -> None:
         """交互式主循环。支持 /command 快捷调用 prompt 模板。"""
         # 启动时展示可用命令
         cmds = self.prompt_loader.list_commands()
         if cmds:
             print(cmds)
+
+        # 如果有初始消息，先处理
+        if initial_message:
+            msg = self._expand_command(initial_message)
+            self.conversation.add_user_message(msg)
+            print(f"[You] : {initial_message}")
+            print("[Assistant] : ", end="", flush=True)
+            for chunk in self.runner.step(self.conversation.history):
+                print(chunk, end="", flush=True)
+            print("\n")
 
         while True:
             user_input = input("[You] : ")
@@ -135,9 +187,7 @@ class Agent:
                 self._shutdown()
                 break
 
-            # 处理 /command 模板展开
             msg = self._expand_command(command)
-
             self.conversation.add_user_message(msg)
 
             print("[Assistant] : ", end="", flush=True)
@@ -159,7 +209,6 @@ class Agent:
             print(f"[模板 /{name}] → {resolved[:60]}{'...' if len(resolved) > 60 else ''}")
             return resolved
 
-        # 未匹配模板，原样返回（可能是普通以 / 开头的输入）
         return user_input
 
     def _shutdown(self) -> None:
@@ -173,4 +222,3 @@ class Agent:
         result = self.conversation.compact()
         if result.get("summary") or result.get("preferences"):
             print("[Memory] 已自动压缩并保存本次会话记录")
-        print("退出对话")

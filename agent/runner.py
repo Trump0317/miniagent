@@ -40,6 +40,7 @@ class AgentRunner:
         hooks: EventHooks | None = None,
         max_turns: int | None = None,
         max_tokens: int = 20000,
+        thinking: str | None = None,
     ):
         self.client = client
         self.model = model
@@ -48,6 +49,7 @@ class AgentRunner:
         self.conversation = conversation
         self._token_tracker = token_tracker
         self.hooks = hooks
+        self.thinking = thinking  # off / minimal / low / medium / high / xhigh
         self.max_turns = max_turns
 
     # ── 公共入口 ──
@@ -68,14 +70,20 @@ class AgentRunner:
             turns += 1
 
             # ── 1. LLM 流式调用 ──
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=history,
-                tools=tools,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            kwargs: dict = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": history,
+                "tools": tools,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            # thinking 级别映射到 OpenAI reasoning_effort 参数
+            if self.thinking and self.thinking != "off":
+                effort = {"xhigh": "high", "high": "high", "medium": "medium",
+                          "low": "low", "minimal": "low"}.get(self.thinking, "low")
+                kwargs["reasoning_effort"] = effort
+            response = self.client.chat.completions.create(**kwargs)
 
             full_content = ""
             full_reasoning = ""
