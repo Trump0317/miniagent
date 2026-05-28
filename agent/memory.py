@@ -1,19 +1,25 @@
+"""记忆存储 —— 纯文件 I/O，不调用 LLM，不关心压缩逻辑。
+
+三层结构:
+  history.jsonl  — 对话历史（JSONL 持久化）
+  memory.md      — 核心记忆（追加事实）
+  summaries/     — 每日摘要（按日期文件）
+  user.md        — 用户偏好（列表）
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import json
-import re
-
-from openai import OpenAI
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class ConversationEntry(BaseModel):
+    """单条历史记录的持久化格式。"""
     model_config = ConfigDict(extra="forbid")
-
     created_at: str
     role: str
     content: str | None = None
@@ -21,123 +27,54 @@ class ConversationEntry(BaseModel):
 
 
 class AgentMemory:
-    """agent记忆系统,包含记忆的存储和压缩功能"""
+    """纯存储层 —— 管理对话历史、摘要、偏好和长期记忆的文件读写。
 
-    def __init__(self, memory_dir: Path, client: OpenAI, model: str, compact_k: int = 10):
-        # 用于压缩的模型客户端和模型名称
-        self.client = client
-        self.model = model
-        # 长期记忆存储，基于文件系统，三层记忆结构加上用户偏好
+    LLM 压缩逻辑已抽离到 Compactor。
+    """
+
+    def __init__(self, memory_dir: Path):
         self.memory_dir = Path(memory_dir)
         self.memory_file = self.memory_dir / "memory.md"
         self.history_file = self.memory_dir / "history.jsonl"
         self.summary_dir = self.memory_dir / "summaries"
         self.user_file = self.memory_dir / "user.md"
-        self.history = []
-        self.k = compact_k  # 每次压缩的历史消息数量
+
+        # 内存中的消息历史（Runner 直接操作此列表）
+        self.history: list[dict] = []
+
         # 确保目录和文件存在
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.summary_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not self.memory_file.exists():
-            self.memory_file.write_text("# 长期记忆\n\n此文件常驻上下文，记录核心目标、当前任务与关键事实。\n", encoding="utf-8")
+        for f, header in [
+            (self.memory_file, "# 长期记忆\n\n此文件常驻上下文，记录核心目标、当前任务与关键事实。\n"),
+            (self.user_file, "# 用户信息\n\n此文件记录用户的基本信息和偏好。\n"),
+        ]:
+            if not f.exists():
+                f.write_text(header, encoding="utf-8")
         if not self.history_file.exists():
             self.history_file.write_text("", encoding="utf-8")
-        if not self.user_file.exists():
-            self.user_file.write_text("# 用户信息\n\n此文件记录用户的基本信息和偏好。\n", encoding="utf-8")
 
-    def _now(self) -> str:
+    # ── 时间工具 ──
+
+    @staticmethod
+    def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    # ── 会话恢复 ──
-
-    def restore_history(self) -> list[dict]:
-        """从 history.jsonl 加载上次保存的对话，恢复为消息列表。
-
-        系统消息不在持久化文件中（每次启动重建），
-        恢复 user / assistant / tool 消息。
-        """
-        if not self.history_file.exists():
-            return []
-        entries = []
-        with self.history_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                role = entry.get("role", "")
-                msg: dict = {"role": role, "content": entry.get("content", "")}
-
-                # 恢复工具消息的 tool_call_id
-                if role == "tool":
-                    meta = entry.get("metadata", {})
-                    if meta.get("tool_call_id"):
-                        msg["tool_call_id"] = meta["tool_call_id"]
-
-                # 恢复助手消息中的思维链和工具调用
-                if role == "assistant":
-                    meta = entry.get("metadata", {})
-                    if meta.get("reasoning_content"):
-                        msg["reasoning_content"] = meta["reasoning_content"]
-                    if meta.get("tool_calls"):
-                        msg["tool_calls"] = meta["tool_calls"]
-
-                entries.append(msg)
-
-        return entries
-    
     def _today_file(self, when: datetime | None = None) -> Path:
         moment = when or datetime.now()
         return self.summary_dir / f"{moment:%Y-%m-%d}.md"
-    
-    def brief_context(self) -> str:
-        """获取系统提示词所需的上下文背景"""
-        content = []
-        # 1. 长期记忆核心内容 (memory.md)
-        if self.memory_file.exists():
-            text = self.memory_file.read_text(encoding="utf-8")
-            valid_lines = [line.strip() for line in text.split("\n") if line.strip() and not line.strip().startswith("#")]
-            if valid_lines:
-                content.append("## 核心记忆")
-                content.extend(valid_lines[-15:])
 
-        # 2. 最近的摘要 (summaries/*.md)
-        if self.summary_dir.exists():
-            summaries = sorted(self.summary_dir.glob("*.md"), reverse=True)
-            if summaries:
-                content.append("## 最近历史摘要")
-                for s_file in summaries[:3]:
-                    day = s_file.stem
-                    text = s_file.read_text(encoding="utf-8")
-                    content.append(f"### {day}")
-                    # 去掉摘要文件中的大标题，直接显示内容
-                    summary_lines = [l for l in text.split("\n") if not l.strip().startswith("#")]
-                    content.append("\n".join(summary_lines).strip())
+    # ── 历史读写 ──
 
-        return "\n".join(content) if content else "（暂无历史背景）"
-
-    def user_preferences(self) -> list[str]:
-        """获取用户偏好列表"""
-        if not self.user_file.exists():
-            return []
-        lines = self.user_file.read_text(encoding="utf-8").split("\n")
-        return [line.strip("- ").strip() for line in lines if line.strip().startswith("-")]
-
-    def append_history(self, content: Any):
-        """记录对话历史。系统消息和工具结果也持久化（会话恢复需要完整消息链）。"""
+    def append_history(self, content: Any) -> None:
+        """追加消息到内存列表，并持久化到 JSONL。"""
         self.history.append(content)
         if not isinstance(content, dict):
             return
 
         role = content.get("role")
         if role == "system":
-            # 系统消息是每次启动重建的，不需要持久化
-            return
+            return  # 系统消息每次启动重建，不持久化
 
         entry = ConversationEntry(
             created_at=self._now(),
@@ -147,17 +84,46 @@ class AgentMemory:
                 "reasoning_content": content.get("reasoning_content"),
                 "tool_calls": content.get("tool_calls"),
                 "tool_call_id": content.get("tool_call_id"),
-            } if role == "assistant" or role == "tool" else {}
+            } if role in ("assistant", "tool") else {},
         )
-
         with self.history_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry.model_dump(), ensure_ascii=False) + "\n")
 
+    def restore_history(self) -> list[dict]:
+        """从 history.jsonl 恢复上次会话的 user/assistant/tool 消息。"""
+        if not self.history_file.exists():
+            return []
+        entries = []
+        with self.history_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not (line := line.strip()):
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                role = entry.get("role", "")
+                msg: dict = {"role": role, "content": entry.get("content", "")}
+                meta = entry.get("metadata", {})
+
+                if role == "tool" and meta.get("tool_call_id"):
+                    msg["tool_call_id"] = meta["tool_call_id"]
+                if role == "assistant":
+                    if meta.get("reasoning_content"):
+                        msg["reasoning_content"] = meta["reasoning_content"]
+                    if meta.get("tool_calls"):
+                        msg["tool_calls"] = meta["tool_calls"]
+
+                entries.append(msg)
+        return entries
+
+    # ── 摘要 ──
+
     def append_summary(self, critical: str, decision: str, issue: str) -> Path:
-        """追加每日摘要"""
+        """追加每日摘要条目。"""
         today_file = self._today_file()
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
         mode = "a" if today_file.exists() else "w"
         with today_file.open(mode, encoding="utf-8") as f:
             if mode == "w":
@@ -167,107 +133,45 @@ class AgentMemory:
             f.write(f"- **决策**: {decision}\n")
             f.write(f"- **问题**: {issue}\n\n")
         return today_file
-    
-    def add_memory(self, content: str) -> None:
-        """添加长期记忆"""
-        with self.memory_file.open("a", encoding="utf-8") as f:
-            f.write(f"- {content.strip()}\n")
+
+    def brief_context(self) -> str:
+        """获取系统提示词所需的最近背景。"""
+        parts: list[str] = []
+
+        if self.memory_file.exists():
+            text = self.memory_file.read_text(encoding="utf-8")
+            valid = [l.strip() for l in text.split("\n")
+                     if l.strip() and not l.strip().startswith("#")]
+            if valid:
+                parts.append("## 核心记忆")
+                parts.extend(valid[-15:])
+
+        if self.summary_dir.exists():
+            summaries = sorted(self.summary_dir.glob("*.md"), reverse=True)
+            for s_file in summaries[:3]:
+                text = s_file.read_text(encoding="utf-8")
+                parts.append(f"### {s_file.stem}")
+                parts.extend(l for l in text.split("\n")
+                             if not l.strip().startswith("#"))
+
+        return "\n".join(parts) if parts else "（暂无历史背景）"
+
+    # ── 偏好与事实 ──
+
+    def user_preferences(self) -> list[str]:
+        """读取用户偏好列表。"""
+        if not self.user_file.exists():
+            return []
+        return [line.strip("- ").strip()
+                for line in self.user_file.read_text(encoding="utf-8").split("\n")
+                if line.strip().startswith("-")]
 
     def add_user(self, preference: str) -> None:
-        """添加用户偏好"""
+        """追加用户偏好。"""
         with self.user_file.open("a", encoding="utf-8") as f:
             f.write(f"- {preference.strip()}\n")
 
-    # --- 压缩与提取逻辑 ---
-
-    def compact(self) -> dict[str, Any]:
-        """执行压缩机制：总结对话并提取偏好"""
-        # 如果历史太短（剔除系统消息后）则跳过
-        effective_history = [m for m in self.history if m.get("role") != "system"]
-        if len(effective_history) < 2:
-            return {}
-
-        # 1. 调用 LLM 统一提取
-        data = self._extract_knowledge_with_llm(effective_history)
-        
-        # 2. 处理摘要 (Summary) -> 写入每日文件
-        summary_info = data.get("summary", {})
-        critical = self._truncate(summary_info.get("critical", "无"))
-        decision = self._truncate(summary_info.get("decision", "无"))
-        issue = self._truncate(summary_info.get("issue", "无"))
-        summary_path = self.append_summary(critical, decision, issue)
-
-        # 3. 处理用户偏好 (Preferences) -> 写入 user.md
-        preferences = data.get("preferences", [])
-        for p in preferences:
-            self.add_user(p)
-
-        # 4. 处理核心事实 (Facts) -> 写入 memory.md
-        facts = data.get("facts", [])
-        for f in facts:
-            self.add_memory(f)
-
-        return {
-            "summary": {"critical": critical, "decision": decision, "issue": issue, "path": str(summary_path)},
-            "preferences": preferences,
-            "facts": facts,
-        }
-
-    def _formathistory(self, history: list[dict]) -> str:
-        """格式化历史记录用于 LLM 总结"""
-        lines: list[str] = []
-        for msg in history:
-            role = msg.get("role")
-            if role == "system":
-                continue
-            
-            content = msg.get("content") or ""
-            
-            # 特殊处理助手消息中的工具调用
-            if role == "assistant" and msg.get("tool_calls"):
-                tool_names = [tc.get("function", {}).get("name", "unknown") for tc in msg["tool_calls"]]
-                content = f"[调用工具: {', '.join(tool_names)}] {content}".strip()
-            
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
-
-    def _extract_knowledge_with_llm(self, history: list[dict]) -> dict[str, Any]:
-        """利用 LLM 一次性提取摘要、偏好和事实"""
-
-        # 历史消息过长时，只保留最近的 k 条进行分析，确保在模型上下文限制内
-        history = history[-self.k :]
-        prompt = (
-            "你是一个记忆提取专家。请分析以下对话，并提取关键信息。\n"
-            "输出必须是严格的 JSON 格式，包含以下字段：\n"
-            "1. summary: 对象，包含 critical(关键事件), decision(决策/产出), issue(心得/问题)。\n"
-            "- 要求：每项极简，总字数 < 150 字。\n"
-            "2. preferences: 字符串列表。记录用户明确表达的偏好、习惯或要求（如 '以后请用简短风格回答'）。\n"
-            "3. facts: 字符串列表。记录值得长期记住的核心事实（如用户的职业、当前正在进行的大型项目名称等）。\n"
-            "注意：如果没有相关信息，对应的列表应为空，字段不能缺失。"
-        )
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": self._formathistory(history)},
-                ],
-                response_format={"type": "json_object"}
-            )
-            return json.loads(response.choices[0].message.content or "{}")
-        except Exception as e:
-            print(f"[Memory] 提取知识失败: {e}")
-            return {
-                "summary": {"critical": f"提取失败: {e}", "decision": "无", "issue": "无"},
-                "preferences": [],
-                "facts": []
-            }
-
-    def _truncate(self, text: str, limit: int = 60) -> str:
-        stripped = text.strip()
-        if len(stripped) <= limit:
-            return stripped
-        return stripped[: limit - 1].rstrip() + "…"
-
-
-    
+    def add_memory(self, fact: str) -> None:
+        """追加长期记忆事实。"""
+        with self.memory_file.open("a", encoding="utf-8") as f:
+            f.write(f"- {fact.strip()}\n")

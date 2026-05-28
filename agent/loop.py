@@ -3,7 +3,8 @@
 依赖:
     Agent
     ├── EventBus         ← 事件总线
-    ├── AgentMemory      ← 持久化存储 + 历史列表
+    ├── AgentMemory      ← 纯存储（文件 I/O）
+    ├── Compactor        ← 记忆压缩（LLM 提取）
     ├── TokenTracker     ← 用量统计
     ├── LLMClient        ← LLM 调用
     ├── ToolExecutor     ← 工具调度
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Generator
 from .config import AppConfig
 from .memory import AgentMemory
+from .compactor import Compactor
 from .tokentracker import TokenTracker
 from .llm import LLMClient
 from .runner import AgentRunner
@@ -50,35 +52,28 @@ class Agent:
 
         # ── 事件总线 ──
         self.bus = EventBus()
-        self._setup_events()
 
-        # ── 存储 ──
-        self.memory = AgentMemory(
-            memory_dir=cfg.memory_dir, client=client, model=cfg.model
-        )
+        # ── 存储（纯 I/O，不依赖 LLM）──
+        self.memory = AgentMemory(memory_dir=cfg.memory_dir)
+
+        # ── 压缩器（LLM 提取，不读写文件）──
+        self.compactor = Compactor(client=client, model=cfg.model)
+
+        # ── Token 统计 ──
         self.tracker = TokenTracker(
             log_file=Path(cfg.memory_dir) / "tokens.jsonl"
         )
 
-        # ── 初始化历史 ──
-        # history 就是 memory.history 这个 list，Runner 直接操作它
+        # ── 历史 ──
         self.history: list[dict] = self.memory.history
 
-        # ── 技能 ──
+        # ── 技能 / Agent 定义 / Prompt 模板 ──
         skills = SkillsLoader(skill_directory=cfg.skills_dir)
-
-        # ── Agent 定义 ──
         agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
-
-        # ── Prompt 模板 ──
         self.prompt_loader = PromptLoader(cfg.root / "agent" / "prompts")
 
-        # ── 系统提示词 ──
-        system_prompt = self._build_system_prompt(
-            skills, agent_loader, self.prompt_loader,
-        )
-
-        # ── 注入系统消息 + 恢复会话 ──
+        # ── 系统提示词 + 会话恢复 ──
+        system_prompt = self._build_system_prompt(skills, agent_loader)
         self.memory.append_history({"role": "system", "content": system_prompt})
         if cfg.restore_session:
             old = self.memory.restore_history()
@@ -102,6 +97,9 @@ class Agent:
             max_turns=cfg.max_turns,
         )
 
+        # ── 事件（在组件就绪后注册）──
+        self._setup_events()
+
     # ── 公共 API ──
 
     def process(self, message: str) -> Generator[str, None, None]:
@@ -111,10 +109,10 @@ class Agent:
         yield from self.runner.step(self.history)
 
     def shutdown(self) -> dict:
-        """关闭会话，返回统计。"""
+        """关闭会话，返回统计和压缩结果。"""
         self.bus.emit("session:end", {})
         stats = self.tracker.stats_by_model()
-        compact_result = self.memory.compact()
+        compact_result = self._do_compact()
         return {"token_stats": stats, "compact": compact_result}
 
     # ── 内部 ──
@@ -127,10 +125,28 @@ class Agent:
             self.config.max_context, self.config.compact_threshold
         )
 
-    def _do_compact(self) -> None:
-        result = self.memory.compact()
-        if result.get("summary") or result.get("preferences"):
+    def _do_compact(self) -> dict:
+        """执行压缩：Compactor 提取 → Memory 写入。"""
+        data = self.compactor.compact(self.history)
+
+        summary = data.get("summary", {})
+        if any(summary.values()):
+            self.memory.append_summary(
+                summary.get("critical", "无"),
+                summary.get("decision", "无"),
+                summary.get("issue", "无"),
+            )
+
+        for p in data.get("preferences", []):
+            self.memory.add_user(p)
+
+        for f in data.get("facts", []):
+            self.memory.add_memory(f)
+
+        if summary or data.get("preferences") or data.get("facts"):
             print("[Memory] 自动压缩完成", flush=True)
+
+        return data
 
     def _setup_events(self) -> None:
         """注册核心事件监听器。"""
@@ -146,10 +162,8 @@ class Agent:
                     "threshold": self.config.compact_threshold,
                 })
 
-    def _build_system_prompt(
-        self, skills: SkillsLoader, agent_loader: AgentLoader, prompt_loader: PromptLoader,
-    ) -> str:
-        commands = prompt_loader.list_commands()
+    def _build_system_prompt(self, skills: SkillsLoader, agent_loader: AgentLoader) -> str:
+        commands = self.prompt_loader.list_commands()
         parts = ["你是一个智能助手，可以使用各种工具来帮助用户完成任务。"]
         if self.config.context_files:
             parts.append(f"### 项目上下文\n{self.config.context_files}")
