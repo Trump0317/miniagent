@@ -22,7 +22,6 @@ class Agent:
         self,
         config: AppConfig | None = None,
         thinking: str | None = None,
-        context_files: str = "",
     ):
         self.config = config or AppConfig.from_env()
         cfg = self.config
@@ -46,7 +45,7 @@ class Agent:
 
         # ── 系统提示词 ──
         system_prompt = self._build_system_prompt(
-            skills, memory, agent_loader, self.prompt_loader, context_files
+            skills, memory, agent_loader, self.prompt_loader,
         )
 
         # ── 对话状态 ──
@@ -81,9 +80,9 @@ class Agent:
         memory: AgentMemory,
         agent_loader: AgentLoader,
         prompt_loader: PromptLoader,
-        context_files: str = "",
     ) -> str:
         commands = prompt_loader.list_commands()
+        context_files = self.config.context_files
         parts = [
             "你是一个智能助手，可以使用各种工具来帮助用户完成任务。",
         ]

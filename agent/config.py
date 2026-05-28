@@ -76,6 +76,9 @@ class AppConfig:
     # ── 会话 ──
     restore_session: bool = True  # 启动时恢复上次对话
 
+    # ── 上下文文件 ──
+    context_files: str = ""  # AGENTS.md 等上下文文件内容
+
     def __post_init__(self):
         # 路径默认值
         if self.memory_dir is None:

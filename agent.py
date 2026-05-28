@@ -95,14 +95,15 @@ def main():
     from agent.context import load_context_files
 
     user_dir = Path.home() / ".miniagent"
-    context_files = "" if args.no_context_files else load_context_files(user_dir=user_dir)
+    ctx = "" if args.no_context_files else load_context_files(user_dir=user_dir)
 
     # ── 构建 Agent ──
+    from agent.config import AppConfig
     from agent.loop import Agent
 
     agent = Agent(
+        config=AppConfig.from_env(context_files=ctx),
         thinking=args.thinking,
-        context_files=context_files,
     )
     agent.run(initial_message=initial_message, print_mode=args.print)
 
