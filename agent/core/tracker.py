@@ -11,7 +11,6 @@ from typing import Any
 class TokenTracker:
     def __init__(self, log_file: Path):
         self.log_file = log_file
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self._last_input_tokens = 0
 
     def record(self, model: str, usage: Any) -> None:
@@ -31,6 +30,7 @@ class TokenTracker:
         
         self._last_input_tokens = row["input"]
         
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         with self.log_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush() # 强制刷新到磁盘

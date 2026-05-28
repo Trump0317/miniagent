@@ -95,9 +95,9 @@ class Agent:
 
         # ── 基础设施 ──
         self.bus = EventBus()
-        self.memory = AgentMemory(memory_dir=cfg.memory_dir)
+        self.memory = AgentMemory(memory_dir=cfg.memory_dir, session_dir=cfg.session_dir)
         self.compactor = Compactor(client=client, model=cfg.model)
-        self.tracker = TokenTracker(log_file=Path(cfg.memory_dir) / "tokens.jsonl")
+        self.tracker = TokenTracker(log_file=cfg.session_dir / "tokens.jsonl")
 
         # ── 技能 / 子代理 / 命令 ──
         skills = SkillsLoader(skill_directory=cfg.skills_dir)

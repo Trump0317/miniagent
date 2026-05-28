@@ -74,7 +74,8 @@ class AppConfig:
     subagent_max_turns: int = 15
 
     # ── 会话 ──
-    restore_session: bool = True  # 启动时恢复上次对话
+    restore_session: bool = False  # 启动时恢复上次对话
+    session_id: str = ""           # 会话标识（默认自动生成时间戳）
 
     # ── 上下文文件 ──
     context_files: str = ""  # AGENTS.md 等上下文文件内容
@@ -83,8 +84,22 @@ class AppConfig:
         # 路径默认值
         if self.memory_dir is None:
             self.memory_dir = self.root / "agent" / ".memory"
+        self.memory_dir = Path(self.memory_dir)
         if self.skills_dir is None:
             self.skills_dir = self.root / "skills"
+
+        # 会话 ID（默认用时间戳；restore_session 时复用最新会话）
+        if not self.session_id:
+            from datetime import datetime
+            if self.restore_session:
+                latest = self._latest_session_dir()
+                if latest:
+                    self.session_id = latest.name
+            if not self.session_id:
+                self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+
+        # 会话私有目录（history.jsonl / tokens.jsonl）
+        self._session_dir: Path | None = None
 
         # Provider 预设 → 填充默认 model / base_url
         preset = PROVIDER_PRESETS.get(self.provider, PROVIDER_PRESETS["custom"])
@@ -132,6 +147,25 @@ class AppConfig:
             or preset.get("subagent_model", preset["default_model"]),
             **overrides,
         )
+
+    def _latest_session_dir(self) -> Path | None:
+        """最近一次有非空 history.jsonl 的会话目录。"""
+        sessions_root = self.memory_dir / "sessions"
+        if not sessions_root.exists():
+            return None
+        dirs = sorted(sessions_root.iterdir(), key=lambda p: p.name, reverse=True)
+        for d in dirs:
+            hf = d / "history.jsonl"
+            if d.is_dir() and hf.exists() and hf.stat().st_size > 0:
+                return d
+        return None
+
+    @property
+    def session_dir(self) -> Path:
+        """会话私有目录路径（延迟创建，由 AgentMemory 或 TokenTracker 首次写入时创建）。"""
+        if self._session_dir is None:
+            self._session_dir = self.memory_dir / "sessions" / self.session_id
+        return self._session_dir
 
     def create_client(self) -> OpenAI:
         """根据配置创建 OpenAI 兼容客户端"""

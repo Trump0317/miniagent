@@ -178,6 +178,8 @@ def main():
                         help="思考级别（off / minimal / low / medium / high / xhigh）")
     parser.add_argument("-nc", "--no-context-files", action="store_true",
                         help="禁用 AGENTS.md / CLAUDE.md 上下文文件自动加载")
+    parser.add_argument("-r", "--restore", action="store_true",
+                        help="恢复最近的会话历史")
     parser.add_argument("message", nargs="*",
                         help="初始消息（空格连接）；支持 @file 引用")
 
@@ -190,26 +192,21 @@ def main():
     initial_message = "\n\n".join(initial_parts) if initial_parts else ""
 
     # ── 加载上下文文件 ──
-    from agent.ai.context import load_context_files
     from agent import AppConfig
 
     user_dir = Path.home() / ".miniagent"
     ctx = "" if args.no_context_files else load_context_files(user_dir=user_dir)
 
-    # ── 构建 Agent 核心 ──
+    # ── 构建 Agent ──
     from agent import Agent
 
     agent = Agent(
         config=AppConfig.from_env(
             context_files=ctx,
-            restore_session=not args.print,
+            restore_session=args.restore,
         ),
         thinking=args.thinking,
     )
-
-    # 交互模式：新会话，重置 token 统计
-    if not args.print:
-        agent.tracker.reset_session()
 
     # ── 启动外壳 ──
     _print_startup_info(agent)

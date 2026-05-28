@@ -31,20 +31,28 @@ class AgentMemory:
       - 写入统一走 append_message()，一步完成树 + JSONL
     """
 
-    def __init__(self, memory_dir: Path):
+    def __init__(self, memory_dir: Path, session_dir: Path | None = None):
         self.memory_dir = Path(memory_dir)
+        self._session_dir = Path(session_dir) if session_dir else self.memory_dir
+
+        # 共享文件（跨会话）
         self.memory_file = self.memory_dir / "memory.md"
-        self.history_file = self.memory_dir / "history.jsonl"
         self.summary_dir = self.memory_dir / "summaries"
         self.user_file = self.memory_dir / "user.md"
+
+        # 会话私有文件
+        self.history_file = self._session_dir / "history.jsonl"
 
         # ── 树（唯一真相来源）──
         self._tree = SessionTree()
         self._fork_stack: list[str] = []  # fork 跳转栈，记录每次分叉前的位置
 
-        # 确保目录和文件存在
+        # 确保目录存在（共享文件目录）
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.summary_dir.mkdir(parents=True, exist_ok=True)
+        # 会话目录延迟创建（第一条消息写入时）
+        if self.history_file.exists():
+            pass  # 已存在则保留
         for f, header in [
             (self.memory_file, "# 长期记忆\n\n此文件常驻上下文，记录核心目标、当前任务与关键事实。\n"),
             (self.user_file, "# 用户信息\n\n此文件记录用户的基本信息和偏好。\n"),
@@ -52,7 +60,7 @@ class AgentMemory:
             if not f.exists():
                 f.write_text(header, encoding="utf-8")
         if not self.history_file.exists():
-            self.history_file.write_text("", encoding="utf-8")
+            pass  # 延迟创建，只在第一条消息写入后才产生
 
     # ── history 属性（树的可读视图）──
 
@@ -128,6 +136,8 @@ class AgentMemory:
         if not entry:
             return
 
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+
         row: dict[str, Any] = {
             "id": entry.id,
             "parent_id": entry.parent_id,
@@ -184,6 +194,8 @@ class AgentMemory:
         """全量持久化树到 JSONL（DFS 序）。压缩后调用。"""
         if not self._tree._root_id:
             return
+
+        self._session_dir.mkdir(parents=True, exist_ok=True)
 
         with self.history_file.open("w", encoding="utf-8") as f:
             self._write_subtree(self._tree._root_id, f)
