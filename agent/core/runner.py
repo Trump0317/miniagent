@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Generator, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .tokentracker import TokenTracker
+    from .tracker import TokenTracker
     from .events import EventBus
 
 

@@ -176,14 +176,14 @@ def main():
     initial_message = "\n\n".join(initial_parts) if initial_parts else ""
 
     # ── 加载上下文文件 ──
-    from agent.context import load_context_files
-    from agent.config import AppConfig
+    from agent.ai.context import load_context_files
+    from agent import AppConfig
 
     user_dir = Path.home() / ".miniagent"
     ctx = "" if args.no_context_files else load_context_files(user_dir=user_dir)
 
     # ── 构建 Agent 核心 ──
-    from agent.loop import Agent
+    from agent import Agent
 
     agent = Agent(
         config=AppConfig.from_env(context_files=ctx),

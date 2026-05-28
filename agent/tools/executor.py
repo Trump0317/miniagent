@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Generator, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .events import EventBus
-    from .tools import ToolRegistry
+    from ..core.events import EventBus
+    from .registry import ToolRegistry
 
 MAX_RESULT_BYTES = 50 * 1024
 MAX_RESULT_LINES = 2000

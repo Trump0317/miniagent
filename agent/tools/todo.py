@@ -3,7 +3,7 @@ from typing import Type
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.tools.ToolRegistry.base import Tool, tool
+from agent.tools.base import Tool, tool
 
 
 class TodoStatus(str, Enum):

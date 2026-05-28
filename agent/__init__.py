@@ -1,6 +1,6 @@
-from .loop import Agent
-from .events import EventBus, Event
-from .config import AppConfig
-from .llm import LLMClient
+from .core.agent import Agent
+from .core.events import EventBus, Event
+from .ai.config import AppConfig
+from .ai.llm import LLMClient
 
 __all__ = ["Agent", "EventBus", "Event", "AppConfig", "LLMClient"]

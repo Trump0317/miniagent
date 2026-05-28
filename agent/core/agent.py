@@ -14,19 +14,19 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Generator
-from .config import AppConfig
+from ..ai.config import AppConfig
 from .memory import AgentMemory
 from .compactor import Compactor
-from .tokentracker import TokenTracker
-from .llm import LLMClient
+from .tracker import TokenTracker
+from ..ai.llm import LLMClient
 from .runner import AgentRunner
 from .events import EventBus
-from .tools import (
+from ..tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool,
     WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
 )
-from .tools.executor import ToolExecutor
-from .tools.SubagentTool.loader import AgentLoader
+from ..tools.executor import ToolExecutor
+from ..tools.subagent_loader import AgentLoader
 from .prompts import PromptLoader
 
 

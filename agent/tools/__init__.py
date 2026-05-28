@@ -1,13 +1,13 @@
-from .ToolRegistry.registry import ToolRegistry
-from .BashTool.bash import BashTool
-from .FileEditTool.file_edit import FileEditTool
-from .FileReadTool.file_read import FileReadTool
-from .FileWriteTool.file_write import FileWriteTool
-from .WebFetchTool.web_fetch import WebFetchTool
-from .WebSearchTool.web_search import WebSearchTool
-from .SkillTool.skills import SkillTool, SkillsLoader
-from .TodoWriteTool.todo_write import TodoWriteTool
-from .SubagentTool.subagent import SubagentTool
+from .registry import ToolRegistry
+from .bash import BashTool
+from .file_edit import FileEditTool
+from .file_read import FileReadTool
+from .file_write import FileWriteTool
+from .web_fetch import WebFetchTool
+from .web_search import WebSearchTool
+from .skill import SkillTool, SkillsLoader
+from .todo import TodoWriteTool
+from .subagent import SubagentTool
 
 __all__ = [
     "ToolRegistry",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from agent.tools.ToolRegistry.base import Tool, tool
+from agent.tools.base import Tool, tool
 from typing import Type, Optional
 import os
 import re

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from agent.tools.ToolRegistry.base import Tool, tool
-from agent.tools.ToolRegistry.registry import ToolRegistry
+from agent.tools.base import Tool, tool
+from agent.tools.registry import ToolRegistry
 from typing import Type, Optional, List, TYPE_CHECKING
 from types import SimpleNamespace
 from openai import OpenAI
@@ -15,8 +15,8 @@ import tempfile
 import atexit
 
 if TYPE_CHECKING:
-    from agent.tokentracker import TokenTracker
-    from .loader import AgentLoader, AgentDefinition
+    from agent.core.tracker import TokenTracker
+    from .subagent_loader import AgentLoader, AgentDefinition
 
 
 class TaskItem(BaseModel):
@@ -207,7 +207,7 @@ class SubagentTool(Tool):
         """cfg = (system_prompt, model, max_turns, tool_registry)"""
         system_prompt, agent_model, max_turns, tool_registry = cfg
         from agent.runner import AgentRunner
-        from agent.tokentracker import TokenTracker
+        from agent.core.tracker import TokenTracker
 
         # 1. 独立的上下文和独立的 token tracker
         import uuid
