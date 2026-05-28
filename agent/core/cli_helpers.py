@@ -69,7 +69,7 @@ def handle_back(agent: Agent) -> None:
     if target:
         entry = agent.memory.tree.get(target)
         content = (entry.content or "")[:60].replace("\n", " ") if entry else "(未知)"
-        agent._system_prompt = agent._build_system_prompt(agent._skills, agent._agent_loader)
+        agent._system_prompt = agent._prompt.build()
         print(f"[back] 已返回: {content}")
     else:
         print("[back] 没有可返回的位置（fork 栈为空）")
@@ -109,8 +109,6 @@ def handle_fork(agent: Agent, command: str) -> None:
 
     agent.memory.push_fork()  # 保存当前位置，以便 /back 返回
     agent.memory.fork(target.id)
-    # 重建系统提示词
-    agent._system_prompt = agent._build_system_prompt(agent._skills, agent._agent_loader)
-
+    agent._system_prompt = agent._prompt.build()
     content = (target.content or "")[:60].replace("\n", " ")
     print(f"[fork] 已分叉到: {content}")
