@@ -9,8 +9,9 @@ def _minify_schema(schema: dict) -> dict:
     """瘦身 JSON Schema：去除 LLM 不需要的冗余字段，缩减 token 消耗。
 
     处理：
-    - 删除 title / default / additionalProperties
-    - anyOf[{type:X},{type:null}] → 直接保留 non-null 类型
+    - 删除 title / additionalProperties（LLM 不需要）
+    - 保留 default（帮助 LLM 识别可选字段）
+    - 保留 anyOf[{X}, {null}] 不折叠（让 LLM 明确知道可选类型）
     - 递归处理嵌套对象和数组
     """
     schema = deepcopy(schema)
@@ -20,18 +21,11 @@ def _minify_schema(schema: dict) -> dict:
 
 def _walk(node: dict) -> None:
     """递归遍历并精简 schema 节点。"""
-    # 移除冗余字段
-    for key in ("title", "default", "additionalProperties"):
+    # 移除冗余字段（保留 default，帮助 LLM 识别可选字段）
+    for key in ("title", "additionalProperties"):
         node.pop(key, None)
 
-    # anyOf[non-null, null] → 展开为 non-null 类型
-    if "anyOf" in node and isinstance(node["anyOf"], list):
-        non_null = [o for o in node["anyOf"] if o.get("type") != "null"]
-        if len(non_null) == 1:
-            merged = {k: v for k, v in node.items() if k != "anyOf"}
-            merged.update(non_null[0])
-            node.clear()
-            node.update(merged)
+    # 不再折叠 anyOf[{X}, {null}]，保留 Optional 语义给 LLM
 
     # 递归：properties
     for prop in node.get("properties", {}).values():
