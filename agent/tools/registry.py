@@ -70,7 +70,7 @@ class ToolRegistry:
             validated_params = tool.cast_params(arguments)
             result = tool.execute(**validated_params)
             
-            if isinstance(result, str) and (result.lower().startswith("error") or result.startswith("错误")):
+            if isinstance(result, str) and ("error" in result.lower() or result.startswith("错误")):
                 return f"{result}{self._ERROR_HINT}"
             return str(result)
 

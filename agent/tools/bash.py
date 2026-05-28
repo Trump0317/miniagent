@@ -95,12 +95,16 @@ class BashTool(Tool):
                 bufsize=1,  # 行缓冲
             )
 
+            yielded = False
             for line in proc.stdout:
                 yield line
+                yielded = True
 
             proc.wait(timeout=timeout)
             if proc.returncode != 0:
                 yield f"\n[退出码: {proc.returncode}]"
+            elif not yielded:
+                yield f"[命令执行成功，无输出。]"
 
         except subprocess.TimeoutExpired:
             proc.kill()
