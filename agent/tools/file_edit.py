@@ -10,7 +10,7 @@ class FileEditArgs(BaseModel):
 
 @tool(
     name="file_edit_tool",
-    description="通过搜寻并替换特定文本块的方式编辑文件（补丁模式）。支持精确匹配和忽略缩进的模糊匹配。",
+    description="精确替换文件中的文本块，支持忽略缩进的模糊匹配。",
     parameters=FileEditArgs,
 )
 class FileEditTool(Tool):

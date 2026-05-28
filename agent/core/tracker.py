@@ -35,6 +35,12 @@ class TokenTracker:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush() # 强制刷新到磁盘
 
+    def reset_session(self) -> None:
+        """清空 token 日志，开始新会话统计。"""
+        self._last_input_tokens = 0
+        if self.log_file.exists():
+            self.log_file.write_text("", encoding="utf-8")
+
     def last_input_tokens(self) -> int:
         return self._last_input_tokens
 

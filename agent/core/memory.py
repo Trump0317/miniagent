@@ -66,12 +66,25 @@ class AgentMemory:
 
     # ── 历史读写 ──
 
-    def append_history(self, content: Any) -> None:
-        """追加消息到内存列表，并持久化到 JSONL。"""
+    def append_history(self, content: Any, persist: bool = True) -> None:
+        """追加消息到内存列表，默认同时持久化到 JSONL。
+
+        persist=False 用于恢复历史（消息已存在于 JSONL，避免重复写入）。
+        """
         self.history.append(content)
+        if persist:
+            self._persist_message(content)
+
+    def persist_message(self, content: Any) -> None:
+        """只持久化到 JSONL，不修改内存中的历史列表。
+
+        用于 runner 直接 history.append() 后的异步持久化。
+        """
+        self._persist_message(content)
+
+    def _persist_message(self, content: Any) -> None:
         if not isinstance(content, dict):
             return
-
         role = content.get("role")
         if role == "system":
             return  # 系统消息每次启动重建，不持久化
@@ -121,6 +134,9 @@ class AgentMemory:
                         msg["reasoning_content"] = meta["reasoning_content"]
                     if meta.get("tool_calls"):
                         msg["tool_calls"] = meta["tool_calls"]
+                    # 修复历史遗留：content 为 None 且无 tool_calls 的消息无法通过 API 校验
+                    if msg.get("content") is None and not msg.get("tool_calls"):
+                        msg["content"] = meta.get("reasoning_content") or ""
 
                 entries.append(msg)
 
@@ -207,11 +223,42 @@ class AgentMemory:
                 if line.strip().startswith("-")]
 
     def add_user(self, preference: str) -> None:
-        """追加用户偏好。"""
+        """追加用户偏好（自动去重）。"""
+        p = preference.strip()
+        if not p:
+            return
+        existing = self.get_existing_preferences()
+        if p in existing:
+            return
         with self.user_file.open("a", encoding="utf-8") as f:
-            f.write(f"- {preference.strip()}\n")
+            f.write(f"- {p}\n")
 
-    def add_memory(self, fact: str) -> None:
-        """追加长期记忆事实。"""
-        with self.memory_file.open("a", encoding="utf-8") as f:
-            f.write(f"- {fact.strip()}\n")
+    def get_existing_preferences(self) -> set[str]:
+        """返回 user.md 中已有的所有偏好文本，用于去重。"""
+        prefs: set[str] = set()
+        for line in self.user_preferences():
+            prefs.add(line)
+        return prefs
+
+    def add_memory(self, fact: str) -> bool:
+        """追加长期记忆事实（自动去重）。返回 True 表示新增，False 表示已存在。"""
+        f = fact.strip()
+        if not f:
+            return False
+        existing = self.get_existing_facts()
+        if f in existing:
+            return False
+        with self.memory_file.open("a", encoding="utf-8") as fh:
+            fh.write(f"- {f}\n")
+        return True
+
+    def get_existing_facts(self) -> set[str]:
+        """返回 memory.md 中已有的所有事实文本，用于去重。"""
+        if not self.memory_file.exists():
+            return set()
+        facts: set[str] = set()
+        for line in self.memory_file.read_text(encoding="utf-8").split("\n"):
+            line = line.strip()
+            if line.startswith("- "):
+                facts.add(line[2:].strip())
+        return facts

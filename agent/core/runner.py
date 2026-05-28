@@ -72,16 +72,23 @@ class AgentRunner:
                             tool_calls_accum[idx][k] = chunk[k]
 
             # ── 2. 写入助手消息 ──
-            assistant_msg: dict = {"role": "assistant", "content": full_content or None}
+            # 确保 API 兼容：content 和 tool_calls 不能同时为空
+            has_tool_calls = bool(tool_calls_accum)
+            assistant_content: str | None = full_content or None
+            if assistant_content is None and not has_tool_calls:
+                assistant_content = full_reasoning or ""  # fallback: 用 reasoning 或空串
+            assistant_msg: dict = {"role": "assistant", "content": assistant_content}
             if full_reasoning:
                 assistant_msg["reasoning_content"] = full_reasoning
-            if tool_calls_accum:
+            if has_tool_calls:
                 assistant_msg["tool_calls"] = [
                     {"id": tc["id"], "type": "function",
                      "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                     for tc in tool_calls_accum.values()
                 ]
             history.append(assistant_msg)
+            if self.bus:
+                self.bus.emit("history:appended", {"message": assistant_msg})
 
             # ── 3. 无工具调用 → 结束 ──
             if not tool_calls_accum:
@@ -101,11 +108,14 @@ class AgentRunner:
             for tc in assistant_msg["tool_calls"]:
                 tid = tc["id"]
                 if tid in tool_results:
-                    history.append({
+                    tool_msg = {
                         "role": "tool",
                         "tool_call_id": tid,
                         "content": tool_results[tid],
-                    })
+                    }
+                    history.append(tool_msg)
+                    if self.bus:
+                        self.bus.emit("history:appended", {"message": tool_msg})
 
     def _record(self, chunk: dict) -> None:
         if not self._tracker:

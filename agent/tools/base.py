@@ -1,7 +1,56 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import Any, Type, Dict
 from pydantic import BaseModel, ValidationError
+
+
+def _minify_schema(schema: dict) -> dict:
+    """瘦身 JSON Schema：去除 LLM 不需要的冗余字段，缩减 token 消耗。
+
+    处理：
+    - 删除 title / default / additionalProperties
+    - anyOf[{type:X},{type:null}] → 直接保留 non-null 类型
+    - 递归处理嵌套对象和数组
+    """
+    schema = deepcopy(schema)
+    _walk(schema)
+    return schema
+
+
+def _walk(node: dict) -> None:
+    """递归遍历并精简 schema 节点。"""
+    # 移除冗余字段
+    for key in ("title", "default", "additionalProperties"):
+        node.pop(key, None)
+
+    # anyOf[non-null, null] → 展开为 non-null 类型
+    if "anyOf" in node and isinstance(node["anyOf"], list):
+        non_null = [o for o in node["anyOf"] if o.get("type") != "null"]
+        if len(non_null) == 1:
+            merged = {k: v for k, v in node.items() if k != "anyOf"}
+            merged.update(non_null[0])
+            node.clear()
+            node.update(merged)
+
+    # 递归：properties
+    for prop in node.get("properties", {}).values():
+        if isinstance(prop, dict):
+            _walk(prop)
+
+    # 递归：items (array)
+    if isinstance(node.get("items"), dict):
+        _walk(node["items"])
+
+    # 递归：$defs
+    for d in node.get("$defs", {}).values():
+        if isinstance(d, dict):
+            _walk(d)
+
+    # 递归：anyOf（多个类型的情况）
+    for o in node.get("anyOf", []):
+        if isinstance(o, dict) and o.get("type") != "null":
+            _walk(o)
 
 
 class Tool(ABC):
@@ -42,8 +91,8 @@ class Tool(ABC):
 
     @property
     def parameters(self) -> Dict[str, Any]:
-        """JSON Schema 参数定义，供 LLM function calling 使用"""
-        return self.args_model.model_json_schema()
+        """JSON Schema 参数定义，供 LLM function calling 使用（已瘦身）"""
+        return _minify_schema(self.args_model.model_json_schema())
 
     def cast_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """利用 Pydantic 模型对原始参数做类型转换和校验"""

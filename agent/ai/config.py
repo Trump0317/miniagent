@@ -67,7 +67,7 @@ class AppConfig:
     max_turns: int | None = None
     max_tokens: int = 20_000
     max_context: int = 200_000
-    compact_threshold: float = 0.7
+    compact_threshold: float = 0.35
 
     # ── 子代理 ──
     subagent_model: str = ""

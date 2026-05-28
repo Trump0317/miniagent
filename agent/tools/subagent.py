@@ -21,14 +21,14 @@ if TYPE_CHECKING:
 
 
 class TaskItem(BaseModel):
-    task: str = Field(description="交给子代理的具体任务。")
+    task: str = Field(description="交给子代理的任务描述。")
 
 class SubagentArgs(BaseModel):
-    agent: Optional[str] = Field(default=None, description="要使用的子代理名称（对应 agents/*.md 定义文件）。不指定则使用默认子代理。")
-    task: Optional[str] = Field(default=None, description="交给子代理的具体任务（单模式）。")
-    tasks: Optional[List[TaskItem]] = Field(default=None, description="并行任务列表。")
-    chain: Optional[List[TaskItem]] = Field(default=None, description="链式任务列表，支持 {previous} 占位符引用前一步的输出。")
-    max_parallel: int = Field(default=4, description="并行模式下的最大并发数。")
+    agent: str | None = Field(default=None, description="子代理名称，不指定则用默认")
+    task: str | None = Field(default=None, description="单模式任务")
+    tasks: list[TaskItem] | None = Field(default=None, description="并行任务列表")
+    chain: list[TaskItem] | None = Field(default=None, description="链式任务列表，{previous} 引用前一步输出")
+    max_parallel: int = Field(default=4, description="最大并发数")
 
 @dataclass
 class AgentDefinition:

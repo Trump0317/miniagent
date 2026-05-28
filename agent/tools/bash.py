@@ -27,7 +27,7 @@ class BashArgs(BaseModel):
 
 @tool(
     name="bash_tool",
-    description="在系统终端中执行命令并返回标准输出(stdout)和标准错误(stderr)。支持 Windows (PowerShell) 并兼容 Linux/macOS。",
+    description="在终端执行命令，返回 stdout 和 stderr。",
     parameters=BashArgs,
 )
 class BashTool(Tool):

@@ -13,26 +13,22 @@ class TodoStatus(str, Enum):
 
 
 class TodoItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     id: int | None = Field(default=None, description="待办事项 id")
-    content: str | None = Field(default=None, min_length=1, description="待办事项内容")
+    content: str | None = Field(default=None, description="待办事项内容")
     status: TodoStatus | None = Field(default=None, description="待办事项状态")
 
 
 class TodoWriteArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     replace_todos: list[TodoItem] | None = Field(default=None, description="用新列表整体替换当前待办事项")
     add_todos: list[TodoItem] | None = Field(default=None, description="新增待办事项")
     update_todos: list[TodoItem] | None = Field(default=None, description="按 id 更新待办事项")
     remove_ids: list[int] | None = Field(default=None, description="按 id 删除待办事项")
-    clear: bool = Field(default=False, description="清空全部待办事项；仅当当前所有待办事项都已完成时才会执行")
+    clear: bool = Field(default=False, description="清空全部待办事项")
 
 
 @tool(
     name="todo_write",
-    description="将待办事项写入 todolist",
+    description="管理待办列表：替换/新增/更新/删除/清空。",
     parameters=TodoWriteArgs,
 )
 class TodoWriteTool(Tool):

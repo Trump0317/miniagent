@@ -10,7 +10,7 @@ class FileWriteArgs(BaseModel):
 
 @tool(
     name="file_write_tool",
-    description="直接将指定内容写入整个文件。如果文件已存在，将覆盖原有内容；如果文件不存在，将创建新文件并写入内容。",
+    description="将内容写入文件。已存在则覆盖，不存在则创建。",
     parameters=FileWriteArgs,
 )
 class FileWriteTool(Tool):

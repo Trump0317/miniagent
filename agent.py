@@ -193,6 +193,10 @@ def main():
         thinking=args.thinking,
     )
 
+    # 交互模式：新会话，重置 token 统计
+    if not args.print:
+        agent.tracker.reset_session()
+
     # ── 启动外壳 ──
     _print_startup_info(agent)
 

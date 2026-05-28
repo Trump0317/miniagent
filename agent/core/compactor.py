@@ -25,13 +25,18 @@ class Compactor:
         "   - 要求：每项极简，总字数 < 150 字。\n"
         "2. preferences: 字符串列表。记录用户明确表达的偏好、习惯或要求。\n"
         "3. facts: 字符串列表。记录值得长期记住的核心事实。\n"
-        "注意：如果没有相关信息，对应的列表应为空，字段不能缺失。"
+        "注意：\n"
+        "- 如果没有相关信息，对应的列表应为空，字段不能缺失。\n"
+        "- **不要**提取系统已知的静态信息（如工具数量、模型名称、框架名称等），这些不是需要记住的'事实'。\n"
+        "- 只提取本次对话中**首次出现**的、对后续任务有指导意义的信息。\n"
+        "- 偏好和事实都要尽量简短，每条 < 30 字。"
     )
 
     def __init__(self, client: OpenAI, model: str, compact_k: int = 10):
         self.client = client
         self.model = model
         self.k = compact_k
+        self._last_usage: dict[str, int] = {}  # 最近一次压缩的 token 用量
 
     def compact(self, history: list[dict]) -> dict[str, Any]:
         """分析历史，返回结构化提取结果。
@@ -44,6 +49,7 @@ class Compactor:
             return {"summary": {}, "preferences": [], "facts": []}
 
         recent = effective[-self.k:]
+        self._last_usage = {}
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -53,6 +59,12 @@ class Compactor:
                 ],
                 response_format={"type": "json_object"},
             )
+            # 记录压缩的 token 消耗
+            if hasattr(response, "usage") and response.usage:
+                self._last_usage = {
+                    "input": getattr(response.usage, "prompt_tokens", 0) or 0,
+                    "output": getattr(response.usage, "completion_tokens", 0) or 0,
+                }
             data = json.loads(response.choices[0].message.content or "{}")
         except Exception as e:
             print(f"[Compactor] 提取失败: {e}", flush=True)
