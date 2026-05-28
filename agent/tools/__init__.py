@@ -20,5 +20,5 @@ __all__ = [
     "SkillTool",
     "SkillsLoader",
     "TodoWriteTool",
-    "SubagentTool"
+    "SubagentTool",
 ]
