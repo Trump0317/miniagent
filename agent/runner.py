@@ -1,129 +1,82 @@
-"""Agent 执行引擎 —— 负责 LLM 流式调用和工具执行编排。
+"""Agent 执行引擎 —— think-act 循环编排。
 
-历史管理和 Token 统计不在本模块处理，而是通过 Conversation 对象委托。
-这使得 Runner 可以独立测试，也可被 SubagentTool 用原始 history list 复用。
+LLM 调用委托给 LLMClient，工具执行委托给 ToolExecutor。
+本模块只负责：组装 assistant 消息、管理历史、触发事件。
 """
 
 from __future__ import annotations
-from openai import OpenAI
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Generator
+from typing import Generator, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .conversation import Conversation
-    from .tools.ToolRegistry.registry import ToolRegistry
     from .tokentracker import TokenTracker
-    from .hooks import EventHooks
-
-# 工具结果截断参数
-MAX_RESULT_BYTES = 50 * 1024
-MAX_RESULT_LINES = 2000
-MAX_PARALLEL_TOOLS = 8
+    from .events import EventBus
 
 
 class AgentRunner:
-    """执行 agent 的 think-act 循环。
+    """执行 think-act 循环。
 
-    两种使用模式：
-    1. 主循环模式：传入 conversation，自动管理历史和 token
-    2. 子代理模式：不传 conversation，由调用方管理原始 history list
+    两种模式：
+    1. 主循环模式：传入 conversation，自动管理历史
+    2. 子代理模式：不传 conversation，用原始 history list
     """
 
     def __init__(
         self,
-        client: OpenAI,
-        model: str,
-        tool_registry: ToolRegistry | None = None,
+        llm_client,
+        tool_executor,
         conversation: Conversation | None = None,
         token_tracker: TokenTracker | None = None,
-        hooks: EventHooks | None = None,
+        event_bus: EventBus | None = None,
         max_turns: int | None = None,
-        max_tokens: int = 20000,
-        thinking: str | None = None,
     ):
-        self.client = client
-        self.model = model
-        self.max_tokens = max_tokens
-        self.tool_registry = tool_registry
+        self.llm = llm_client
+        self.tools = tool_executor
         self.conversation = conversation
         self._token_tracker = token_tracker
-        self.hooks = hooks
-        self.thinking = thinking  # off / minimal / low / medium / high / xhigh
+        self.bus = event_bus
         self.max_turns = max_turns
 
-    # ── 公共入口 ──
-
-    def step(self, history: list[dict]):
-        """执行一轮完整的对话（可能包含多个 tool-use 回合）。
-
-        这是一个生成器，逐块产出 LLM 文本和工具执行状态。
-        所有产出都是 str 类型，调用方直接 print。
-        """
+    def step(self, history: list[dict]) -> Generator[str, None, None]:
+        """执行一轮完整对话（可能多轮 tool-use）。逐块产出文本。"""
         turns = 0
         while True:
             if self.max_turns is not None and turns >= self.max_turns:
                 yield f"\n[达到最大轮数 {self.max_turns}，已熔断]\n"
                 break
 
-            tools = self.tool_registry.get_tool_schemas() if self.tool_registry else []
+            tool_schemas = self.tools.registry.get_tool_schemas()
             turns += 1
 
-            # ── 1. LLM 流式调用 ──
-            kwargs: dict = {
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "messages": history,
-                "tools": tools,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-            # thinking 级别映射到 OpenAI reasoning_effort 参数
-            if self.thinking and self.thinking != "off":
-                effort = {"xhigh": "high", "high": "high", "medium": "medium",
-                          "low": "low", "minimal": "low"}.get(self.thinking, "low")
-                kwargs["reasoning_effort"] = effort
-            response = self.client.chat.completions.create(**kwargs)
+            # 事件：轮次开始
+            if self.bus:
+                self.bus.emit("turn:start", {"turn": turns}, source="runner")
 
+            # ── 1. LLM 流式调用 ──
             full_content = ""
             full_reasoning = ""
             tool_calls_accum: dict[int, dict] = {}
 
-            for chunk in response:
-                # Token 用量（流末尾的 usage chunk）
-                if hasattr(chunk, "usage") and chunk.usage:
-                    self._record_tokens(chunk.usage)
-                    continue
+            for chunk in self.llm.stream(history, tool_schemas):
+                if chunk["type"] == "usage":
+                    self._record_usage(chunk)
 
-                if not chunk.choices:
-                    continue
+                elif chunk["type"] == "reasoning":
+                    full_reasoning += chunk["text"]
 
-                delta = chunk.choices[0].delta
+                elif chunk["type"] == "content":
+                    full_content += chunk["text"]
+                    yield chunk["text"]
 
-                # 思维链（DeepSeek R1）
-                reasoning = getattr(delta, "reasoning_content", None)
-                if reasoning:
-                    full_reasoning += reasoning
+                elif chunk["type"] == "tool_call":
+                    idx = chunk["index"]
+                    if idx not in tool_calls_accum:
+                        tool_calls_accum[idx] = {"id": None, "name": None, "arguments": ""}
+                    for key in ("id", "name", "arguments"):
+                        if key in chunk and chunk[key]:
+                            tool_calls_accum[idx][key] = chunk[key]
 
-                # 正文流式产出
-                if delta.content:
-                    full_content += delta.content
-                    yield delta.content
-
-                # 工具调用累积
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_accum:
-                            tool_calls_accum[idx] = {"id": None, "name": None, "arguments": ""}
-                        if tc.id:
-                            tool_calls_accum[idx]["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            tool_calls_accum[idx]["name"] = tc.function.name
-                        if tc.function and tc.function.arguments:
-                            tool_calls_accum[idx]["arguments"] += tc.function.arguments
-
-            # ── 2. 构造助手消息并写入历史 ──
+            # ── 2. 组装助手消息 ──
             assistant_msg: dict = {"role": "assistant", "content": full_content or None}
             if full_reasoning:
                 assistant_msg["reasoning_content"] = full_reasoning
@@ -140,29 +93,30 @@ class AgentRunner:
 
             self._add_to_history(assistant_msg, history)
 
-            # ── 3. 无工具调用 → 对话结束 ──
+            # ── 3. 无工具调用 → 结束 ──
             if not tool_calls_accum:
                 self._maybe_compact()
+                if self.bus:
+                    self.bus.emit("turn:end", {"text": full_content}, source="runner")
                 return
 
             # ── 4. 执行工具 ──
             tool_results: dict[str, str] = {}
-            for item in self._execute_tools(assistant_msg["tool_calls"]):
+            for item in self.tools.execute(assistant_msg["tool_calls"]):
                 if isinstance(item, dict):
                     tool_results[item["id"]] = item["result"]
                 else:
                     yield str(item)
 
-            # ── 5. 工具结果写入历史 ──
+            # ── 5. 写入工具结果 ──
             for tc in assistant_msg["tool_calls"]:
                 tc_id = tc["id"]
                 if tc_id in tool_results:
                     self._add_tool_result(tc_id, tool_results[tc_id], history)
 
-            # 继续循环，让模型根据结果回复
             continue
 
-    # ── 历史管理（委托给 Conversation 或直接操作 list）──
+    # ── 历史管理 ──
 
     def _add_to_history(self, msg: dict, history: list[dict]) -> None:
         if self.conversation:
@@ -176,173 +130,41 @@ class AgentRunner:
         else:
             history.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
-    def _record_tokens(self, usage) -> None:
+    def _record_usage(self, chunk: dict) -> None:
         if self.conversation:
-            self.conversation.record_tokens(self.model, usage)
+            # 构建兼容 usage 对象
+            from types import SimpleNamespace
+            usage = SimpleNamespace(
+                prompt_tokens=chunk.get("input", 0),
+                completion_tokens=chunk.get("output", 0),
+                prompt_cache_hit_tokens=chunk.get("cache_hit", 0),
+                prompt_cache_miss_tokens=chunk.get("cache_miss", 0),
+            )
+            self.conversation.record_tokens(self.llm.model, usage)
         elif self._token_tracker:
-            self._token_tracker.record(self.model, usage)
+            self._token_tracker.record(
+                self.llm.model,
+                SimpleNamespace(
+                    prompt_tokens=chunk.get("input", 0),
+                    completion_tokens=chunk.get("output", 0),
+                    prompt_cache_hit_tokens=chunk.get("cache_hit", 0),
+                    prompt_cache_miss_tokens=chunk.get("cache_miss", 0),
+                ),
+            )
 
     def _maybe_compact(self) -> None:
         if not self.conversation:
             return
         if not self.conversation.should_compact():
             return
+
+        if self.bus:
+            self.bus.emit("context:high", {
+                "input_tokens": self.conversation.token_tracker.last_input_tokens(),
+                "max_context": self.conversation.max_context,
+            }, source="runner")
+
         print(f"\n[Memory] 上下文用量接近上限, 自动压缩中...", flush=True)
         result = self.conversation.compact()
         if result.get("summary") or result.get("facts"):
             print(f"[Memory] 压缩完成", flush=True)
-
-    # ── 工具执行 ──
-
-    def _execute_tools(self, tool_calls: list[dict]) -> Generator[str | dict, None, None]:
-        """执行工具调用。
-
-        策略：
-        - 单工具 → 串行
-        - 多工具 && 全部 parallel_safe → 并行
-        - 多工具 && 存在非安全工具 → 全部降级串行
-        """
-        count = len(tool_calls)
-        if count == 1:
-            yield from self._execute_serial(tool_calls)
-            return
-
-        all_safe = all(
-            self.tool_registry.get_tool(tc["function"]["name"]).parallel_safe
-            for tc in tool_calls
-            if self.tool_registry.get_tool(tc["function"]["name"])
-        )
-
-        if all_safe:
-            yield from self._execute_parallel(tool_calls)
-        else:
-            unsafe_names = [
-                tc["function"]["name"]
-                for tc in tool_calls
-                if self.tool_registry.get_tool(tc["function"]["name"])
-                and not self.tool_registry.get_tool(tc["function"]["name"]).parallel_safe
-            ]
-            yield f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n"
-            yield from self._execute_serial(tool_calls)
-
-    def _execute_serial(self, tool_calls: list[dict]):
-        from .hooks import apply_tool_call_hook, apply_tool_result_hook
-
-        for tc in tool_calls:
-            name = tc["function"]["name"]
-            args = self._parse_args(tc)
-            yield f"[执行工具: {name}...]\n"
-
-            # before hook
-            args, block_reason = apply_tool_call_hook(self.hooks, name, args)
-            if block_reason:
-                result = f"[拦截] {name}: {block_reason}"
-            else:
-                tool = self.tool_registry.get_tool(name)
-                if tool and tool.supports_streaming:
-                    result = yield from self._run_streaming(tool, args)
-                else:
-                    try:
-                        result = self.tool_registry.call_tool(name, args)
-                    except Exception as e:
-                        result = f"[错误] {name}: {e}"
-
-            # after hook
-            result = apply_tool_result_hook(self.hooks, name, result)
-            yield {"id": tc["id"], "result": self._truncate(result)}
-
-    def _run_streaming(self, tool, args: dict) -> str:
-        """流式执行工具，逐块产出中间文本，最后返回完整结果。"""
-        chunks: list[str] = []
-        try:
-            for chunk in tool.stream_execute(**args):
-                if chunk:
-                    chunks.append(str(chunk))
-                    yield str(chunk)
-        except Exception as e:
-            return f"[错误] {tool.name}: {e}"
-        return "".join(chunks)
-
-    def _execute_parallel(self, tool_calls: list[dict]):
-        from .hooks import apply_tool_call_hook, apply_tool_result_hook
-
-        count = len(tool_calls)
-        workers = min(count, MAX_PARALLEL_TOOLS)
-        yield f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"
-
-        results: dict[str, str] = {}
-
-        def _run_one(tc):
-            name = tc["function"]["name"]
-            args = self._parse_args(tc)
-            # before hook
-            args, block_reason = apply_tool_call_hook(self.hooks, name, args)
-            if block_reason:
-                raw = f"[拦截] {name}: {block_reason}"
-            else:
-                tool = self.tool_registry.get_tool(name)
-                if tool and tool.supports_streaming:
-                    chunks = []
-                    try:
-                        for chunk in tool.stream_execute(**args):
-                            if chunk:
-                                chunks.append(str(chunk))
-                        raw = "".join(chunks)
-                    except Exception as e:
-                        raw = f"[错误] {name}: {e}"
-                else:
-                    try:
-                        raw = self.tool_registry.call_tool(name, args)
-                    except Exception as e:
-                        raw = f"[错误] {name}: {e}"
-            # after hook
-            return tc["id"], name, apply_tool_result_hook(self.hooks, name, raw)
-
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_run_one, tc): tc for tc in tool_calls}
-            for future in as_completed(futures):
-                tc_id, name, raw = future.result()
-                results[tc_id] = self._truncate(raw)
-                yield f"[{name}] ✓\n"
-
-        for tc in tool_calls:
-            tc_id = tc["id"]
-            if tc_id in results:
-                yield {"id": tc_id, "result": results[tc_id]}
-
-    # ── 工具函数 ──
-
-    @staticmethod
-    def _parse_args(tc: dict) -> dict:
-        raw = tc.get("function", {}).get("arguments", "{}")
-        try:
-            return json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            return {}
-
-    @staticmethod
-    def _truncate(result: str) -> str:
-        """截断过长输出"""
-        byte_len = len(result.encode("utf-8"))
-        lines = result.split("\n")
-        num_lines = len(lines)
-
-        if byte_len <= MAX_RESULT_BYTES and num_lines <= MAX_RESULT_LINES:
-            return result
-
-        if num_lines > MAX_RESULT_LINES:
-            lines = lines[:MAX_RESULT_LINES]
-            result = "\n".join(lines)
-
-        if len(result.encode("utf-8")) > MAX_RESULT_BYTES:
-            raw = result.encode("utf-8")
-            cut = MAX_RESULT_BYTES
-            while cut > 0 and (raw[cut] & 0xC0) == 0x80:
-                cut -= 1
-            result = raw[:cut].decode("utf-8", errors="replace")
-
-        return (
-            result
-            + f"\n\n[输出已截断: 原始 {byte_len} 字节 / {num_lines} 行, "
-            + f"超出上限 {MAX_RESULT_BYTES} 字节 / {MAX_RESULT_LINES} 行]"
-        )

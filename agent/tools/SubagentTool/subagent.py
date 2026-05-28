@@ -221,10 +221,14 @@ class SubagentTool(Tool):
         sub_tracker = TokenTracker(log_file=tmpfile)
 
         # 2. 独立的 Runner 实例
+        from agent.llm import LLMClient
+        from agent.tools.executor import ToolExecutor
         runner = AgentRunner(
-            client=self._client,
-            model=agent_model,
-            tool_registry=deepcopy(tool_registry),
+            llm_client=LLMClient(
+                client=self._client,
+                model=agent_model,
+            ),
+            tool_executor=ToolExecutor(registry=deepcopy(tool_registry)),
             token_tracker=sub_tracker,
             max_turns=max_turns
         )

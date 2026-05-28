@@ -1,7 +1,14 @@
-"""Agent 核心 —— 组装配置、记忆、工具和运行器。
+"""Agent 核心 —— 组装组件，提供 process() 入口。
 
-这是一个纯粹的库，不包含任何 I/O 或交互逻辑。
-可以嵌入任意外壳（CLI、TUI、RPC、HTTP）中使用。
+依赖关系:
+    Agent
+    ├── EventBus         ← 全局事件总线
+    ├── LLMClient        ← 封装 LLM 调用
+    ├── ToolExecutor     ← 工具执行调度
+    ├── AgentRunner      ← think-act 编排
+    ├── Conversation     ← 会话状态
+    ├── AgentMemory      ← 持久化存储
+    └── TokenTracker     ← 用量统计
 """
 
 from __future__ import annotations
@@ -9,19 +16,22 @@ from pathlib import Path
 from typing import Generator
 from .config import AppConfig
 from .conversation import Conversation
-from .runner import AgentRunner
 from .memory import AgentMemory
 from .tokentracker import TokenTracker
+from .llm import LLMClient
+from .runner import AgentRunner
+from .events import EventBus
 from .tools import (
     ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool,
     WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
 )
+from .tools.executor import ToolExecutor
 from .tools.SubagentTool.loader import AgentLoader
 from .prompts import PromptLoader
 
 
 class Agent:
-    """Agent 核心引擎 —— 组装组件，提供单一入口 process()。
+    """Agent 核心引擎。
 
     用法:
         agent = Agent(config)
@@ -40,13 +50,16 @@ class Agent:
         root = cfg.root
         client = cfg.create_client()
 
+        # ── 事件总线 ──
+        self.bus = EventBus()
+
         # ── 技能 ──
         skills = SkillsLoader(skill_directory=cfg.skills_dir)
 
         # ── Agent 定义 ──
         agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
 
-        # ── Prompt 模板（暴露给外壳做 /command 展开）──
+        # ── Prompt 模板 ──
         self.prompt_loader = PromptLoader(cfg.root / "agent" / "prompts")
 
         # ── 记忆系统 ──
@@ -73,29 +86,44 @@ class Agent:
         # ── 工具注册 ──
         registry = self._build_registry(skills, client, agent_loader)
 
-        # ── 执行引擎 ──
-        self.runner = AgentRunner(
+        # ── LLM 客户端 ──
+        llm = LLMClient(
             client=client,
             model=cfg.model,
-            tool_registry=registry,
-            conversation=self.conversation,
-            max_turns=cfg.max_turns,
             max_tokens=cfg.max_tokens,
             thinking=thinking,
         )
 
+        # ── 工具执行器 ──
+        executor = ToolExecutor(registry=registry, event_bus=self.bus)
+
+        # ── 执行引擎 ──
+        self.runner = AgentRunner(
+            llm_client=llm,
+            tool_executor=executor,
+            conversation=self.conversation,
+            token_tracker=tracker,
+            event_bus=self.bus,
+            max_turns=cfg.max_turns,
+        )
+
+        # ── 事件监听：上下文压力 ──
+        @self.bus.on("context:high")
+        def _on_context_high(event):
+            print(f"\n[Memory] 上下文用量接近上限 (event from {event.source})",
+                  flush=True)
+
     # ── 公共 API ──
 
     def process(self, message: str) -> Generator[str, None, None]:
-        """处理一条用户消息，流式产出 LLM 响应文本。
-
-        外壳负责：收集、打印、格式化这些文本块。
-        """
+        """处理用户消息，流式产出文本。"""
+        self.bus.emit("message:received", {"message": message}, source="agent")
         self.conversation.add_user_message(message)
         yield from self.runner.step(self.conversation.history)
 
     def shutdown(self) -> dict:
-        """关闭会话：返回 token 统计和压缩结果。"""
+        """关闭会话，返回统计。"""
+        self.bus.emit("session:end", {}, source="agent")
         stats = self.conversation.token_stats()
         compact_result = self.conversation.compact()
         return {"token_stats": stats, "compact": compact_result}
@@ -129,7 +157,6 @@ class Agent:
     def _build_registry(self, skills: SkillsLoader, client, agent_loader: AgentLoader) -> ToolRegistry:
         cfg = self.config
 
-        # 主工具注册表
         registry = ToolRegistry()
         registry.register(BashTool())
         registry.register(FileReadTool())
@@ -140,7 +167,6 @@ class Agent:
         registry.register(SkillTool(skills))
         registry.register(TodoWriteTool())
 
-        # 子代理注册表（独立拷贝）
         sub = ToolRegistry()
         sub.register(BashTool())
         sub.register(FileReadTool())
