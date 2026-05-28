@@ -147,6 +147,9 @@ class Agent:
         print_mode=True: 处理 initial_message 后打印结果并退出。
         print_mode=False: 进入交互式循环。
         """
+        # 启动时打印加载的资源摘要
+        self._print_startup_info()
+
         if print_mode:
             self._run_print_mode(initial_message)
         else:
@@ -210,6 +213,17 @@ class Agent:
             return resolved
 
         return user_input
+
+    def _print_startup_info(self) -> None:
+        """启动摘要：上下文文件、思考级别等"""
+        lines = [f"[miniagent] 模型: {self.config.model}"]
+        if self.runner.thinking:
+            lines.append(f"  思考级别: {self.runner.thinking}")
+        # 从系统提示词中提取上下文文件信息
+        sys_msg = self.conversation.history[0]["content"] if self.conversation.history else ""
+        if "### 项目上下文" in sys_msg:
+            lines.append("  上下文文件: 已加载 (AGENTS.md)")
+        print("\n".join(lines))
 
     def _shutdown(self) -> None:
         """退出前：打印统计、压缩记忆"""
