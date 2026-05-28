@@ -192,6 +192,7 @@ def main():
     initial_message = "\n\n".join(initial_parts) if initial_parts else ""
 
     # ── 加载上下文文件 ──
+    from agent.ai.context import load_context_files
     from agent import AppConfig
 
     user_dir = Path.home() / ".miniagent"
