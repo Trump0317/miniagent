@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from agent.tools.ToolRegisty.base import Tool, tool
+from agent.tools.ToolRegistry.base import Tool, tool
 from typing import Optional, Type
 import urllib.request
 import urllib.error
@@ -14,10 +14,6 @@ class WebFetchArgs(BaseModel):
     parameters=WebFetchArgs,
 )
 class WebFetchTool(Tool):
-
-    def run(self, args: WebFetchArgs) -> str:
-        """实现 Tool 的 run 方法"""
-        return self.execute(args.url, args.timeout or 30)
 
     def execute(self, url: str, timeout: int = 30) -> str:
         try:

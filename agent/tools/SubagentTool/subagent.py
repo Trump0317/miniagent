@@ -1,8 +1,9 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from agent.tools.ToolRegisty.base import Tool, tool
-from agent.tools.ToolRegisty.registry import ToolRegistry
+from agent.tools.ToolRegistry.base import Tool, tool
+from agent.tools.ToolRegistry.registry import ToolRegistry
 from typing import Type, Optional, List, TYPE_CHECKING
+from types import SimpleNamespace
 from openai import OpenAI
 from copy import deepcopy
 from pathlib import Path
@@ -10,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 import threading
+import tempfile
+import atexit
 
 if TYPE_CHECKING:
     from agent.tokentracker import TokenTracker
@@ -94,18 +97,6 @@ class SubagentTool(Tool):
             if tool:
                 filtered.register(tool)
         return filtered
-
-    @property
-    def name(self) -> str:
-        return "subagent_tool"
-
-    @property
-    def description(self) -> str:
-        return "启动子代理执行任务。支持单模式、并行模式、链式模式。"
-
-    @property
-    def args_model(self) -> Type[SubagentArgs]:
-        return SubagentArgs
 
     # ──────────────────────────────────────────
     # 公共入口：根据参数决定走哪个模式
@@ -219,13 +210,15 @@ class SubagentTool(Tool):
         from agent.tokentracker import TokenTracker
 
         # 1. 独立的上下文和独立的 token tracker
+        import uuid
+        tmpfile = Path(tempfile.gettempdir()) / f"subagent_tokens_{uuid.uuid4().hex}.jsonl"
+        atexit.register(lambda: tmpfile.unlink(missing_ok=True))
+
         history = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": task}
         ]
-        sub_tracker = TokenTracker(
-            log_file=Path(f"/tmp/subagent_tokens_{id(self)}_{hash(task) % 10000}.jsonl")
-        )
+        sub_tracker = TokenTracker(log_file=tmpfile)
 
         # 2. 独立的 Runner 实例
         runner = AgentRunner(
@@ -286,12 +279,12 @@ class SubagentTool(Tool):
 
             # 子代理的 token 用量也记录到父 tracker（方便最终统计）
             if self._token_tracker:
-                self._token_tracker.record(f"subagent:{agent_model}", type("Usage", (), {
-                    "prompt_tokens": total_input,
-                    "completion_tokens": total_output,
-                    "prompt_cache_hit_tokens": 0,
-                    "prompt_cache_miss_tokens": 0,
-                })())
+                self._token_tracker.record(f"subagent:{agent_model}", SimpleNamespace(
+                    prompt_tokens=total_input,
+                    completion_tokens=total_output,
+                    prompt_cache_hit_tokens=0,
+                    prompt_cache_miss_tokens=0,
+                ))
 
             return final_output, {"input": total_input, "output": total_output}
 

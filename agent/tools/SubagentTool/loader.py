@@ -4,10 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agent.tools.ToolRegisty.registry import ToolRegistry
 
 
 @dataclass
@@ -58,18 +54,6 @@ class AgentLoader:
             tools_str = ", ".join(agent.tools) if agent.tools else "全部"
             lines.append(f"  - {name}: {agent.description} (工具: {tools_str})")
         return "\n".join(lines)
-
-    def build_registry(self, all_tools: ToolRegistry) -> ToolRegistry:
-        """根据 AgentDefinition.tools 构建受限的工具注册表。
-
-        如果 tools 为空，返回完整注册表（所有工具）。
-        如果指定了工具列表，只注册那些工具。
-        """
-        if not all_tools:
-            return all_tools
-        # 深拷贝全部工具，后面按需过滤
-        # AgentLoader 不拥有 ToolRegistry，由调用方提供
-        return all_tools
 
     def _load(self) -> None:
         if not self._directory.exists() or not self._directory.is_dir():

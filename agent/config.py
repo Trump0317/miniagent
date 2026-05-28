@@ -3,6 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 from openai import OpenAI
 
 # ── Provider 预设 ──
@@ -98,7 +99,6 @@ class AppConfig:
         检测顺序：DEEPSEEK_API_KEY → OPENAI_API_KEY → API_KEY（custom）。
         用户可通过 overrides 覆盖任意字段（如 provider="openai"）。
         """
-        import os
         from dotenv import load_dotenv
 
         load_dotenv()

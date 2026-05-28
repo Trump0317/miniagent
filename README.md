@@ -28,7 +28,7 @@ agent/
 ├── runner.py           # 执行引擎（LLM + 工具编排）
 ├── memory.py           # 三层记忆系统 + 自动压缩
 ├── hooks.py            # 事件钩子（拦截/修改工具调用）
-├── prompt.py           # Prompt 模板加载器
+├── prompts.py           # Prompt 模板加载器
 ├── tokentracker.py     # Token 消耗统计
 ├── subagent/           # 子代理定义文件（Markdown + YAML）
 │   ├── scout.md        #   代码侦查员

@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 import subprocess
 import re
 from typing import Optional, Type, ClassVar
-from agent.tools.ToolRegisty.base import Tool, tool
+from agent.tools.ToolRegistry.base import Tool, tool
 
 # ── 安全护栏：禁止执行的命令模式 ──
 # 注意：这不是真正的沙箱，只是防止 LLM 意外执行破坏性操作。

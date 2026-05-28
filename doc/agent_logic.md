@@ -106,7 +106,7 @@ config = AppConfig(provider="custom", model="llama3", api_base_url="http://local
 
 ### 2.6 工具系统 (`agent/tools/`)
 
-#### Tool 基类 (`ToolRegisty/base.py`)
+#### Tool 基类 (`ToolRegistry/base.py`)
 
 重构后不再使用 `__abstractmethods__` hack：
 

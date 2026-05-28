@@ -1,5 +1,4 @@
-from .ToolRegisty.base import Tool, tool
-from .ToolRegisty.registry import ToolRegistry
+from .ToolRegistry.registry import ToolRegistry
 from .BashTool.bash import BashTool
 from .FileEditTool.file_edit import FileEditTool
 from .FileReadTool.file_read import FileReadTool

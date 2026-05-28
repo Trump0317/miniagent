@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Generator
 
 if TYPE_CHECKING:
     from .conversation import Conversation
-    from .tools.ToolRegisty.registry import ToolRegistry
+    from .tools.ToolRegistry.registry import ToolRegistry
     from .tokentracker import TokenTracker
     from .hooks import EventHooks
 

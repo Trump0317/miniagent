@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from agent.tools.ToolRegisty.base import Tool, tool
+from agent.tools.ToolRegistry.base import Tool, tool
 from typing import Optional, Type
 
 

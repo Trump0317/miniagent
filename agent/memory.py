@@ -234,18 +234,17 @@ class AgentMemory:
     def _extract_knowledge_with_llm(self, history: list[dict]) -> dict[str, Any]:
         """利用 LLM 一次性提取摘要、偏好和事实"""
 
-        prompt = f"""
-            你是一个记忆提取专家。请分析以下对话，并提取关键信息。
-            输出必须是严格的 JSON 格式，包含以下字段：
-            1. summary: 对象，包含 critical(关键事件), decision(决策/产出), issue(心得/问题)。
-            - 要求：每项极简，总字数 < 150 字。
-            2. preferences: 字符串列表。记录用户明确表达的偏好、习惯或要求（如 '以后请用简短风格回答'）。
-            3. facts: 字符串列表。记录值得长期记住的核心事实（如用户的职业、当前正在进行的大型项目名称等）。
-            要分析的历史消息: {history[:-self.k]}
-            注意：如果没有相关信息，对应的列表应为空，字段不能缺失。
-        """
         # 历史消息过长时，只保留最近的 k 条进行分析，确保在模型上下文限制内
         history = history[-self.k :]
+        prompt = (
+            "你是一个记忆提取专家。请分析以下对话，并提取关键信息。\n"
+            "输出必须是严格的 JSON 格式，包含以下字段：\n"
+            "1. summary: 对象，包含 critical(关键事件), decision(决策/产出), issue(心得/问题)。\n"
+            "- 要求：每项极简，总字数 < 150 字。\n"
+            "2. preferences: 字符串列表。记录用户明确表达的偏好、习惯或要求（如 '以后请用简短风格回答'）。\n"
+            "3. facts: 字符串列表。记录值得长期记住的核心事实（如用户的职业、当前正在进行的大型项目名称等）。\n"
+            "注意：如果没有相关信息，对应的列表应为空，字段不能缺失。"
+        )
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -269,8 +268,6 @@ class AgentMemory:
         if len(stripped) <= limit:
             return stripped
         return stripped[: limit - 1].rstrip() + "…"
-
-    
 
 
     
