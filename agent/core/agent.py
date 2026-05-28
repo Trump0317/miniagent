@@ -26,7 +26,7 @@ from ..tools import (
     WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
 )
 from ..tools.executor import ToolExecutor
-from ..tools.subagent_loader import AgentLoader
+from ..tools.subagent import AgentLoader
 from .prompts import PromptLoader
 
 

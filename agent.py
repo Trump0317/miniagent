@@ -69,8 +69,8 @@ def _print_startup_info(agent) -> None:
     """启动摘要"""
     cfg = agent.config
     lines = [f"[miniagent] 模型: {cfg.model}"]
-    if agent.runner.thinking:
-        lines.append(f"  思考级别: {agent.runner.thinking}")
+    if agent.runner.llm.thinking:
+        lines.append(f"  思考级别: {agent.runner.llm.thinking}")
     if cfg.context_files:
         lines.append("  上下文文件: 已加载 (AGENTS.md)")
     print("\n".join(lines))
@@ -186,7 +186,10 @@ def main():
     from agent import Agent
 
     agent = Agent(
-        config=AppConfig.from_env(context_files=ctx),
+        config=AppConfig.from_env(
+            context_files=ctx,
+            restore_session=not args.print,
+        ),
         thinking=args.thinking,
     )
 

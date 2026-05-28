@@ -89,8 +89,11 @@ class AgentMemory:
         with self.history_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry.model_dump(), ensure_ascii=False) + "\n")
 
-    def restore_history(self) -> list[dict]:
-        """从 history.jsonl 恢复上次会话的 user/assistant/tool 消息。"""
+    def restore_history(self, max_messages: int = 50) -> list[dict]:
+        """从 history.jsonl 恢复上次会话的 assistant/tool 消息作为上下文延续。
+
+        user 消息不恢复（避免模型误认为是新的待回答查询）。
+        """
         if not self.history_file.exists():
             return []
         entries = []
@@ -104,6 +107,10 @@ class AgentMemory:
                     continue
 
                 role = entry.get("role", "")
+                # 只恢复 assistant 和 tool 消息，跳过 user
+                if role == "user":
+                    continue
+
                 msg: dict = {"role": role, "content": entry.get("content", "")}
                 meta = entry.get("metadata", {})
 
@@ -116,7 +123,40 @@ class AgentMemory:
                         msg["tool_calls"] = meta["tool_calls"]
 
                 entries.append(msg)
+
+        # 限制恢复条数，避免超出模型上下文
+        if len(entries) > max_messages:
+            print(f"[Memory] 历史过长 ({len(entries)} 条)，截断为最近 {max_messages} 条", flush=True)
+            entries = entries[-max_messages:]
+            # 确保截断后不以孤立的 tool 消息开头（必须有前置 assistant tool_calls）
+            while entries and entries[0].get("role") == "tool":
+                entries.pop(0)
+            # 重写历史文件，只保留截断后的内容
+            self._rewrite_history(entries)
+
         return entries
+
+    def _rewrite_history(self, entries: list[dict]) -> None:
+        """重写 history.jsonl，只保留给定的消息。"""
+        now = self._now()
+        with self.history_file.open("w", encoding="utf-8") as f:
+            for msg in entries:
+                role = msg.get("role", "")
+                meta = {}
+                if role == "tool" and msg.get("tool_call_id"):
+                    meta["tool_call_id"] = msg["tool_call_id"]
+                if role == "assistant":
+                    if msg.get("reasoning_content"):
+                        meta["reasoning_content"] = msg["reasoning_content"]
+                    if msg.get("tool_calls"):
+                        meta["tool_calls"] = msg["tool_calls"]
+                entry = {
+                    "created_at": now,
+                    "role": role,
+                    "content": msg.get("content"),
+                    "metadata": meta,
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     # ── 摘要 ──
 

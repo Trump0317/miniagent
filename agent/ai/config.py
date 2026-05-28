@@ -59,7 +59,7 @@ class AppConfig:
     api_base_url: str = ""
 
     # ── 路径 ──
-    root: Path = field(default_factory=lambda: Path(__file__).parent.parent)
+    root: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     memory_dir: Path | None = None
     skills_dir: Path | None = None
 
