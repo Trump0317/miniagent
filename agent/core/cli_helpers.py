@@ -93,10 +93,8 @@ def handle_fork(agent: Agent, command: str) -> None:
         target = all_entries[n - 1]
 
     agent.memory.fork(target.id)
-    agent.history = agent.memory.history
     # 重建系统提示词
-    system = agent._build_system_prompt(agent._skills, agent._agent_loader)
-    agent.history.insert(0, {"role": "system", "content": system})
+    agent._system_prompt = agent._build_system_prompt(agent._skills, agent._agent_loader)
 
     content = (target.content or "")[:60].replace("\n", " ")
     print(f"[fork] 已分叉到: {content}")

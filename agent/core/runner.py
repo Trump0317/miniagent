@@ -90,8 +90,6 @@ class AgentRunner:
                     for tc in tool_calls_accum.values()
                 ]
             history.append(assistant_msg)
-            if self.bus:
-                self.bus.emit("history:appended", {"message": assistant_msg})
 
             # ── 3. 无工具调用 → 结束 ──
             if not tool_calls_accum:
@@ -117,8 +115,6 @@ class AgentRunner:
                         "content": tool_results[tid],
                     }
                     history.append(tool_msg)
-                    if self.bus:
-                        self.bus.emit("history:appended", {"message": tool_msg})
 
     def _record(self, chunk: dict) -> None:
         if not self._tracker:

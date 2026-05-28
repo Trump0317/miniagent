@@ -72,20 +72,12 @@ class Agent:
         # ── 会话恢复（从 JSONL 重建树 + history）──
         restored = self.memory.restore_tree() if cfg.restore_session else False
 
-        # ── 历史（引用 memory 的列表，Runner 直接操作）──
-        self.history: list[dict] = self.memory.history
-
-        # ── 系统提示词（不写入树，只放在 history 头部）──
-        system_prompt = self._build_system_prompt(self._skills, self._agent_loader)
-        self.history.insert(0, {"role": "system", "content": system_prompt})
+        # ── 系统提示词（Agent 单独管理，不写入树）──
+        self._system_prompt = self._build_system_prompt(self._skills, self._agent_loader)
+        self._has_restored_context = restored
 
         if restored:
-            # 注入上下文分隔提示
-            self.history.insert(1, {
-                "role": "user",
-                "content": "[系统] 以下是上次会话的对话记录（仅作上下文参考，不需要回复其中内容）"
-            })
-            non_sys = [m for m in self.history if m.get("role") != "system"]
+            non_sys = [m for m in self.memory.history if m.get("role") != "system"]
             print(f"[Agent] 已恢复会话（{len(non_sys)} 条上下文消息）", flush=True)
 
         # ── 工具注册 ──
@@ -108,11 +100,32 @@ class Agent:
 
     # ── 公共 API ──
 
+    def _build_context(self) -> list[dict]:
+        """构建给 Runner 的完整上下文：[system] + 可选分隔提示 + 树历史。"""
+        context = [{"role": "system", "content": self._system_prompt}]
+        if self._has_restored_context:
+            context.append({
+                "role": "user",
+                "content": "[系统] 以下是上次会话的对话记录（仅作上下文参考，不需要回复其中内容）"
+            })
+            self._has_restored_context = False  # 只注入一次
+        context.extend(self.memory.history)
+        return context
+
     def process(self, message: str) -> Generator[str, None, None]:
         """处理用户消息，流式产出 LLM 响应文本。"""
         self.bus.emit("message:received", {"text": message})
         self._add_message("user", message)
-        yield from self.runner.step(self.history)
+
+        # 给 Runner 独立的上下文快照（Runner 在其上追加 assistant/tool 消息）
+        context = self._build_context()
+        snapshot_len = len(context)
+
+        yield from self.runner.step(context)
+
+        # 扫描 Runner 新增的消息，写入树 + JSONL
+        for msg in context[snapshot_len:]:
+            self.memory.append_message(msg)
 
     def shutdown(self) -> dict:
         """关闭会话，返回统计和压缩结果。"""
@@ -124,7 +137,7 @@ class Agent:
     # ── 内部 ──
 
     def _add_message(self, role: str, content: str) -> None:
-        self.memory.append_history({"role": role, "content": content})
+        self.memory.append_message({"role": role, "content": content})
 
     def _should_compact(self) -> bool:
         return self.tracker.should_compact(
@@ -137,7 +150,7 @@ class Agent:
         if len(non_system) < 4:
             return {"summary": {}, "preferences": [], "facts": []}
 
-        orig_len = len(self.history)
+        orig_len = len(non_system)
         data = self.compactor.compact(non_system)
 
         summary = data.get("summary", {})
@@ -168,19 +181,15 @@ class Agent:
         self.memory.compress_tree(summary_text, first_kept.id,
                                   self.tracker.last_input_tokens())
 
-        # ── 重建 Agent 的 history ──
-        # compress_tree 已经重建了 memory._history，重新获取引用
-        self.history = self.memory.history
         # 重建系统提示词（含压缩摘要）
-        new_system = self._rebuild_system_prompt_with_summary(data)
-        self.history.insert(0, {"role": "system", "content": new_system})
+        self._system_prompt = self._rebuild_system_prompt_with_summary(data)
 
         compacted = bool(summary or data.get("preferences") or new_facts)
         if compacted:
             usage = self.compactor._last_usage
             cost = f"压缩消耗 {usage.get('input', 0)}+{usage.get('output', 0)} tokens" if usage else ""
             print(
-                f"[Memory] 树压缩: {orig_len} 条 → {len(self.history)} 条"
+                f"[Memory] 树压缩: {orig_len} 条 → {len(self.memory.history)} 条"
                 + (f" (新增 {new_facts} 条事实)" if new_facts else "")
                 + (f" | {cost}" if cost else ""),
                 flush=True,
@@ -241,12 +250,6 @@ class Agent:
                     "input_tokens": self.tracker.last_input_tokens(),
                     "threshold": self.config.compact_threshold,
                 })
-
-        @self.bus.on("history:appended")
-        def _on_history_appended(event):
-            msg = event.data.get("message") if event.data else None
-            if msg and isinstance(msg, dict):
-                self.memory.persist_message(msg)
 
     def _build_system_prompt(self, skills: SkillsLoader, agent_loader: AgentLoader) -> str:
         commands = self.prompt_loader.list_commands()

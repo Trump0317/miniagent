@@ -1,10 +1,9 @@
 """记忆存储 —— 纯文件 I/O，不调用 LLM，不关心压缩逻辑。
 
 树状结构存储:
-  - 底层用 SessionTree 管理消息树
-  - 对外暴露 history 属性（普通列表），保持与 Runner 兼容
-  - 压缩/分叉时从树重建 history
-  - JSONL 持久化使用扩展格式（含 id/parent_id/type）
+  - 底层用 SessionTree 管理消息树（唯一真相来源）
+  - 对外 history 属性 = tree.build_context()（给 Runner 的列表视图）
+  - 压缩/分叉后自动反映在 history 中
 
 三层记忆:
   history.jsonl  — 对话历史（JSONL 持久化，树结构）
@@ -26,10 +25,10 @@ from .session_tree import SessionTree, SessionEntry
 class AgentMemory:
     """纯存储层 —— 管理对话历史、摘要、偏好和长期记忆的文件读写。
 
-    历史存储:
-      - self._tree: SessionTree（树状结构，用于压缩/分叉/导航）
-      - self.history: list[dict]（普通列表，Runner 直接操作）
-      - 写入时双写（tree + history），分叉/导航/压缩时从 tree 重建 history
+    树是唯一真相来源：
+      - self._tree: SessionTree（树状结构，用于压缩/分叉/导航/持久化）
+      - self.history: property，返回 tree.build_context()（只读列表视图）
+      - 写入统一走 append_message()，一步完成树 + JSONL
     """
 
     def __init__(self, memory_dir: Path):
@@ -39,11 +38,8 @@ class AgentMemory:
         self.summary_dir = self.memory_dir / "summaries"
         self.user_file = self.memory_dir / "user.md"
 
-        # ── 树（新）──
+        # ── 树（唯一真相来源）──
         self._tree = SessionTree()
-
-        # ── 历史列表（Runner 兼容）──
-        self._history: list[dict] = []
 
         # 确保目录和文件存在
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -57,20 +53,15 @@ class AgentMemory:
         if not self.history_file.exists():
             self.history_file.write_text("", encoding="utf-8")
 
-    # ── history 属性 ──
+    # ── history 属性（树的可读视图）──
 
     @property
     def history(self) -> list[dict]:
-        """当前对话历史列表（Runner 兼容接口）。
+        """从树计算的消息列表（不含 system），供 Runner 使用。
 
-        注意: 返回的是内部列表的引用，Runner 的 append 等操作会直接修改它。
-        修改后需通过 persist_message() 同步到树。
+        每次访问从树实时计算。压缩/分叉后自动反映新路径。
         """
-        return self._history
-
-    @history.setter
-    def history(self, value: list[dict]) -> None:
-        self._history = value
+        return self._tree.build_context()
 
     @property
     def tree(self) -> SessionTree:
@@ -82,6 +73,16 @@ class AgentMemory:
         """当前 leaf entry id"""
         return self._tree.leaf_id
 
+    @property
+    def has_data(self) -> bool:
+        """树中是否有数据（用于判断是否从历史恢复）"""
+        return self._tree._root_id is not None
+
+    @property
+    def entry_count(self) -> int:
+        """树中 entry 总数"""
+        return self._tree.entry_count
+
     # ── 时间工具 ──
 
     @staticmethod
@@ -92,83 +93,47 @@ class AgentMemory:
         moment = when or datetime.now()
         return self.summary_dir / f"{moment:%Y-%m-%d}.md"
 
-    # ── 历史写入（双写: history 列表 + 树）──
+    # ── 唯一写入入口 ──
 
-    def append_history(self, content: dict | Any, persist: bool = True) -> None:
-        """追加消息到 history 列表 + 树。默认同时持久化到 JSONL。
-
-        persist=False 用于恢复历史（消息已存在于 JSONL）。
-        """
-        if not isinstance(content, dict):
-            return
-
-        self._history.append(content)
-        if persist:
-            self._append_to_tree(content)
-            self._persist_entry(content)
-
-    def persist_message(self, content: Any) -> None:
-        """只持久化到 JSONL + 树，不修改 history。
-
-        用于 Runner 直接 history.append() 后的同步。
-        """
-        if not isinstance(content, dict):
-            return
-        self._append_to_tree(content)
-        self._persist_entry(content)
-
-    def _append_to_tree(self, content: dict) -> str | None:
-        """将消息追加到树，返回 entry_id。跳过 system 消息。"""
-        role = content.get("role", "")
+    def append_message(self, msg: dict) -> str:
+        """写入一条消息到树 + JSONL。返回 entry_id。跳过 system 消息。"""
+        role = msg.get("role", "")
         if role == "system":
-            return None  # system 消息不持久化
+            return ""
 
-        metadata: dict[str, Any] = {}
+        metadata = self._extract_metadata(msg)
+        entry_id = self._tree.append(role, msg.get("content"), metadata)
+        self._write_jsonl_line(entry_id, msg)
+        return entry_id
+
+    @staticmethod
+    def _extract_metadata(msg: dict) -> dict[str, Any]:
+        """从消息字典提取树节点需要存储的元数据。"""
+        role = msg.get("role", "")
+        meta: dict[str, Any] = {}
         if role == "assistant":
-            if content.get("tool_calls"):
-                metadata["tool_calls"] = content["tool_calls"]
-            if content.get("reasoning_content"):
-                metadata["reasoning_content"] = content["reasoning_content"]
+            if msg.get("tool_calls"):
+                meta["tool_calls"] = msg["tool_calls"]
+            if msg.get("reasoning_content"):
+                meta["reasoning_content"] = msg["reasoning_content"]
         elif role == "tool":
-            if content.get("tool_call_id"):
-                metadata["tool_call_id"] = content["tool_call_id"]
+            if msg.get("tool_call_id"):
+                meta["tool_call_id"] = msg["tool_call_id"]
+        return meta
 
-        return self._tree.append(role, content.get("content"), metadata)
-
-    def _persist_entry(self, content: dict) -> None:
-        """将单条消息写入 JSONL（新格式，含树结构字段）。
-
-        复用树上最新 entry 的 id/parent_id（刚由 _append_to_tree 创建）。
-        """
-        role = content.get("role", "")
-        if role == "system":
-            return  # 不持久化
-
-        entry_id = self._tree.leaf_id
-        if not entry_id:
-            return
-
+    def _write_jsonl_line(self, entry_id: str, msg: dict) -> None:
+        """将单条消息追加到 JSONL（增量写入）。"""
         entry = self._tree.get(entry_id)
         if not entry:
             return
 
-        meta: dict[str, Any] = {}
-        if role == "assistant":
-            if content.get("tool_calls"):
-                meta["tool_calls"] = content["tool_calls"]
-            if content.get("reasoning_content"):
-                meta["reasoning_content"] = content["reasoning_content"]
-        elif role == "tool":
-            if content.get("tool_call_id"):
-                meta["tool_call_id"] = content["tool_call_id"]
-
-        row = {
+        row: dict[str, Any] = {
             "id": entry.id,
             "parent_id": entry.parent_id,
             "type": entry.type,
-            "role": role,
-            "content": content.get("content"),
-            "metadata": meta,
+            "role": msg.get("role", ""),
+            "content": msg.get("content"),
+            "metadata": self._extract_metadata(msg),
             "timestamp": entry.timestamp,
         }
         with self.history_file.open("a", encoding="utf-8") as f:
@@ -177,175 +142,30 @@ class AgentMemory:
     # ── 树操作（压缩 / 分叉 / 导航）──
 
     def compress_tree(self, summary: str, first_kept_id: str, tokens_before: int) -> str:
-        """压缩树：插入 compaction entry，重建 history，全量持久化 JSONL。
+        """压缩树：插入 COMPACT 节点 + 全量持久化 JSONL。
 
         返回 compaction entry 的 id。
         """
         cid = self._tree.compact(summary, first_kept_id, tokens_before)
-        self._history = self._tree.build_context()
-        # 全量重写 JSONL（树结构变化后需要 DFS 序）
-        self._persist_tree()
+        self._write_jsonl_full()
         return cid
 
     def fork(self, entry_id: str) -> None:
-        """分叉到指定 entry，重建 history"""
+        """分叉到指定 entry。history 自动反映新路径。"""
         self._tree.fork(entry_id)
-        self._history = self._tree.build_context()
 
     def navigate(self, entry_id: str) -> None:
-        """导航到指定 entry（切换分支），重建 history"""
+        """导航到指定 entry（切换分支）。history 自动反映新路径。"""
         self._tree.navigate(entry_id)
-        self._history = self._tree.build_context()
 
     def get_tree_entries(self) -> list[SessionEntry]:
         """获取所有树条目的只读列表"""
         return list(self._tree._entries.values())
 
-    # ── 树恢复（启动时从 JSONL 重建）──
+    # ── JSONL 全量持久化 ──
 
-    def restore_tree(self) -> bool:
-        """从 JSONL 恢复树结构 + history 列表。
-
-        自动检测格式：
-          - 新格式: 含 id/parent_id/type 字段
-          - 旧格式: 仅 role/content/metadata，转换为线性的树
-
-        返回 True 表示有历史数据被恢复。
-        """
-        if not self.history_file.exists():
-            return False
-
-        lines: list[str] = []
-        with self.history_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    lines.append(line)
-
-        if not lines:
-            return False
-
-        # 检测格式
-        first = json.loads(lines[0])
-        if "id" in first and "parent_id" in first and "type" in first:
-            ok = self._load_tree_format(lines)
-        else:
-            ok = self._load_legacy_format(lines)
-
-        # 确保 history 与树同步
-        if self._tree._root_id:
-            self._history = self._tree.build_context()
-
-        return ok and bool(self._history)
-
-    def _load_tree_format(self, lines: list[str]) -> bool:
-        """从新格式 JSONL 重建树"""
-        self._tree = SessionTree()
-
-        for line in lines:
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            entry_id = row.get("id", "")
-            parent_id = row.get("parent_id")
-            entry_type = row.get("type", "message")
-            role = row.get("role", "")
-
-            # 手动插入到树（绕过 append 的自动 leaf 逻辑）
-            entry = SessionEntry(
-                id=entry_id,
-                parent_id=parent_id,
-                type=entry_type,
-                role=role,
-                content=row.get("content") if entry_type == "message" else None,
-                metadata=row.get("metadata", {}),
-                timestamp=row.get("timestamp", 0.0),
-                summary=row.get("summary") if entry_type == "compaction" else None,
-                first_kept_id=row.get("first_kept_id") if entry_type == "compaction" else None,
-                tokens_before=row.get("tokens_before", 0) if entry_type == "compaction" else 0,
-            )
-
-            self._tree._entries[entry_id] = entry
-            if self._tree._root_id is None:
-                self._tree._root_id = entry_id
-
-        # 找 leaf: 从 root 沿最右子节点链走到底
-        if self._tree._root_id:
-            self._tree._leaf_id = self._tree._root_id
-            while True:
-                children = self._tree.children_of(self._tree._leaf_id)
-                if not children:
-                    break
-                self._tree._leaf_id = children[-1].id  # 走最右分支
-
-        return True
-
-    def _load_legacy_format(self, lines: list[str]) -> bool:
-        """从旧格式 JSONL（无树结构）转换为新格式树"""
-        self._tree = SessionTree()
-
-        for line in lines:
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            role = row.get("role", "")
-            content = row.get("content")
-            meta = row.get("metadata", {})
-
-            # 旧格式会跳过 user 消息，但树结构下需要保留
-            # 然而旧格式的 user 消息内容未知，用占位
-            if role == "user":
-                content = content or "(历史用户消息)"
-
-            msg = {"role": role, "content": content}
-            if role == "assistant":
-                if meta.get("tool_calls"):
-                    msg["tool_calls"] = meta["tool_calls"]
-                if meta.get("reasoning_content"):
-                    msg["reasoning_content"] = meta["reasoning_content"]
-            elif role == "tool":
-                if meta.get("tool_call_id"):
-                    msg["tool_call_id"] = meta["tool_call_id"]
-
-            self._history.append(msg)
-            self._append_to_tree(msg)
-
-        # 转换后持久化为新格式，然后从树重建 history
-        self._persist_tree()
-        return True
-
-    def restore_history(self, max_messages: int = 50) -> list[dict]:
-        """恢复上次会话的历史上下文。
-
-        新实现: 从 JSONL 重建树 → 用 build_context 获取恢复后的消息列表。
-        这些消息会作为上下文注入，只需 assistant/tool 部分。
-        """
-        if not self.restore_tree():
-            return []
-
-        # 用于 Agent 注入的恢复消息
-        # 从 build_context 中提取非 system 部分
-        ctx = self._history  # restore_tree() 已设置 self._history
-        non_system = [m for m in ctx if m.get("role") != "system"]
-
-        if not non_system:
-            return []
-
-        # 限制条数
-        if len(non_system) > max_messages:
-            non_system = non_system[-max_messages:]
-            # 确保不以孤立的 tool 消息开头
-            while non_system and non_system[0].get("role") == "tool":
-                non_system.pop(0)
-
-        return non_system
-
-    def _persist_tree(self) -> None:
-        """全量持久化树到 JSONL（用于旧格式迁移后）"""
+    def _write_jsonl_full(self) -> None:
+        """全量持久化树到 JSONL（DFS 序）。压缩后调用。"""
         if not self._tree._root_id:
             return
 
@@ -378,23 +198,105 @@ class AgentMemory:
         for child in self._tree.children_of(entry.id):
             self._write_subtree(child.id, f)
 
-    # ── 旧接口兼容（压缩后在 Agent 中重建 system prompt 用）──
+    # ── 树恢复（启动时从 JSONL 重建）──
 
-    def _rewrite_history(self, entries: list[dict]) -> None:
-        """重写 history.jsonl 和树，只保留给定的消息。
+    def restore_tree(self) -> bool:
+        """从 JSONL 恢复树结构。
 
-        用于压缩后的同步（兼容旧调用）。
+        自动检测格式：
+          - 新格式: 含 id/parent_id/type 字段
+          - 旧格式: 仅 role/content/metadata，转换为新格式
+
+        返回 True 表示有历史数据被恢复。
         """
-        if not entries:
-            return
+        if not self.history_file.exists():
+            return False
 
-        # 重建树
+        lines: list[str] = []
+        with self.history_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    lines.append(line)
+
+        if not lines:
+            return False
+
+        # 检测格式
+        first = json.loads(lines[0])
+        if "id" in first and "parent_id" in first and "type" in first:
+            self._load_tree_format(lines)
+        else:
+            self._load_legacy_format(lines)
+
+        return self.has_data
+
+    def _load_tree_format(self, lines: list[str]) -> None:
+        """从新格式 JSONL 重建树"""
         self._tree = SessionTree()
-        self._history = entries
-        for msg in entries:
-            self._append_to_tree(msg)
 
-        self._persist_tree()
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            entry_id = row.get("id", "")
+            parent_id = row.get("parent_id")
+            entry_type = row.get("type", "message")
+            role = row.get("role", "")
+
+            entry = SessionEntry(
+                id=entry_id,
+                parent_id=parent_id,
+                type=entry_type,
+                role=role,
+                content=row.get("content") if entry_type == "message" else None,
+                metadata=row.get("metadata", {}),
+                timestamp=row.get("timestamp", 0.0),
+                summary=row.get("summary") if entry_type == "compaction" else None,
+                first_kept_id=row.get("first_kept_id") if entry_type == "compaction" else None,
+                tokens_before=row.get("tokens_before", 0) if entry_type == "compaction" else 0,
+            )
+
+            self._tree._entries[entry_id] = entry
+            if self._tree._root_id is None:
+                self._tree._root_id = entry_id
+
+        # 找 leaf: 从 root 沿最右子节点链走到底
+        if self._tree._root_id:
+            self._tree._leaf_id = self._tree._root_id
+            while True:
+                children = self._tree.children_of(self._tree._leaf_id)
+                if not children:
+                    break
+                self._tree._leaf_id = children[-1].id
+
+    def _load_legacy_format(self, lines: list[str]) -> None:
+        """从旧格式 JSONL（无树结构）转换为新格式树"""
+        self._tree = SessionTree()
+
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            role = row.get("role", "")
+            content = row.get("content")
+            if role == "system":
+                continue  # 旧格式可能误存 system 消息
+
+            if role == "user":
+                content = content or "(历史用户消息)"
+
+            meta = row.get("metadata", {})
+            metadata = self._extract_metadata({"role": role, **meta})
+
+            self._tree.append(role, content, metadata)
+
+        # 转换后持久化为新格式
+        self._write_jsonl_full()
 
     # ── 摘要 ──
 
