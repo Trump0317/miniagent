@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""miniagent CLI 入口 —— 交互模式和 print 模式。
+"""miniagent CLI 外壳 —— 交互模式 / print 模式的 Harness 层。
 
 用法:
     python agent.py                          # 交互模式
@@ -14,9 +14,12 @@
 from __future__ import annotations
 import argparse
 import sys
-import os
 from pathlib import Path
 
+
+# ═══════════════════════════════════════════════════════════════
+# Harness 工具函数
+# ═══════════════════════════════════════════════════════════════
 
 def _expand_at_files(args: list[str]) -> str:
     """将 @file 引用展开为文件内容，其余参数用空格连接。"""
@@ -41,6 +44,103 @@ def _read_stdin() -> str:
     return sys.stdin.read().strip()
 
 
+def _expand_command(prompt_loader, user_input: str) -> str:
+    """将 /command query 展开为 prompt 模板。普通输入原样返回。"""
+    if not user_input.startswith("/"):
+        return user_input
+
+    parts = user_input.split(maxsplit=1)
+    name = parts[0][1:]
+    query = parts[1] if len(parts) > 1 else ""
+
+    resolved = prompt_loader.resolve(name, query)
+    if resolved:
+        print(f"[模板 /{name}] → {resolved[:60]}{'...' if len(resolved) > 60 else ''}")
+        return resolved
+
+    return user_input
+
+
+# ═══════════════════════════════════════════════════════════════
+# Harness 模式
+# ═══════════════════════════════════════════════════════════════
+
+def _print_startup_info(agent) -> None:
+    """启动摘要"""
+    cfg = agent.config
+    lines = [f"[miniagent] 模型: {cfg.model}"]
+    if agent.runner.thinking:
+        lines.append(f"  思考级别: {agent.runner.thinking}")
+    if cfg.context_files:
+        lines.append("  上下文文件: 已加载 (AGENTS.md)")
+    print("\n".join(lines))
+
+
+def _run_print_mode(agent, msg: str) -> None:
+    """非交互模式：处理一条消息，输出结果后退出。"""
+    msg = _expand_command(agent.prompt_loader, msg)
+    for chunk in agent.process(msg):
+        print(chunk, end="", flush=True)
+    print()
+    _shutdown(agent)
+
+
+def _run_interactive(agent, initial_message: str = "") -> None:
+    """交互式主循环。"""
+    # 展示可用命令
+    cmds = agent.prompt_loader.list_commands()
+    if cmds:
+        print(cmds)
+
+    # 初始消息
+    if initial_message:
+        msg = _expand_command(agent.prompt_loader, initial_message)
+        print(f"[You] : {initial_message}")
+        print("[Assistant] : ", end="", flush=True)
+        for chunk in agent.process(msg):
+            print(chunk, end="", flush=True)
+        print("\n")
+
+    while True:
+        try:
+            user_input = input("[You] : ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        command = user_input.strip()
+        if command.lower() in {"exit", "quit"}:
+            break
+
+        msg = _expand_command(agent.prompt_loader, command)
+
+        print("[Assistant] : ", end="", flush=True)
+        for chunk in agent.process(msg):
+            print(chunk, end="", flush=True)
+        print("\n")
+
+    _shutdown(agent)
+
+
+def _shutdown(agent) -> None:
+    """退出前：打印统计、压缩记忆"""
+    result = agent.shutdown()
+    stats = result["token_stats"]
+    if stats:
+        print("\n[Tokens] 本次会话 Token 消耗统计:")
+        for m, s in stats.items():
+            print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
+
+    compact = result["compact"]
+    if compact.get("summary") or compact.get("preferences"):
+        print("[Memory] 已自动压缩并保存本次会话记录")
+    print("退出对话")
+
+
+# ═══════════════════════════════════════════════════════════════
+# main
+# ═══════════════════════════════════════════════════════════════
+
 def main():
     parser = argparse.ArgumentParser(
         description="miniagent — 基于 LLM 的智能助手",
@@ -56,56 +156,47 @@ def main():
   agent.py -nc                      禁用上下文文件
         """,
     )
-    parser.add_argument(
-        "-p", "--print",
-        action="store_true",
-        help="非交互模式：执行后打印结果并退出",
-    )
-    parser.add_argument(
-        "--thinking",
-        choices=["off", "minimal", "low", "medium", "high", "xhigh"],
-        default=None,
-        help="思考级别（off / minimal / low / medium / high / xhigh）",
-    )
-    parser.add_argument(
-        "-nc", "--no-context-files",
-        action="store_true",
-        help="禁用 AGENTS.md / CLAUDE.md 上下文文件自动加载",
-    )
-    parser.add_argument(
-        "message",
-        nargs="*",
-        help="初始消息（空格连接）；支持 @file 引用",
-    )
+    parser.add_argument("-p", "--print", action="store_true",
+                        help="非交互模式：执行后打印结果并退出")
+    parser.add_argument("--thinking",
+                        choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+                        default=None,
+                        help="思考级别（off / minimal / low / medium / high / xhigh）")
+    parser.add_argument("-nc", "--no-context-files", action="store_true",
+                        help="禁用 AGENTS.md / CLAUDE.md 上下文文件自动加载")
+    parser.add_argument("message", nargs="*",
+                        help="初始消息（空格连接）；支持 @file 引用")
 
     args = parser.parse_args()
 
-    # ── 组装初始消息：管道输入 + @file 展开 + 命令行参数 ──
+    # ── 组装初始消息 ──
     stdin_text = _read_stdin()
     cli_text = _expand_at_files(args.message)
-
-    initial_parts = []
-    if stdin_text:
-        initial_parts.append(stdin_text)
-    if cli_text:
-        initial_parts.append(cli_text)
+    initial_parts = [p for p in (stdin_text, cli_text) if p]
     initial_message = "\n\n".join(initial_parts) if initial_parts else ""
 
     # ── 加载上下文文件 ──
     from agent.context import load_context_files
+    from agent.config import AppConfig
 
     user_dir = Path.home() / ".miniagent"
     ctx = "" if args.no_context_files else load_context_files(user_dir=user_dir)
 
-    # ── 构建 Agent ──
-    from agent.config import AppConfig
+    # ── 构建 Agent 核心 ──
     from agent.loop import Agent
 
     agent = Agent(
         config=AppConfig.from_env(context_files=ctx),
         thinking=args.thinking,
     )
-    agent.run(initial_message=initial_message, print_mode=args.print)
+
+    # ── 启动外壳 ──
+    _print_startup_info(agent)
+
+    if args.print:
+        _run_print_mode(agent, initial_message)
+    else:
+        _run_interactive(agent, initial_message)
 
 
 if __name__ == "__main__":

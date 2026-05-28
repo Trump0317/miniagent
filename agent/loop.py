@@ -1,7 +1,12 @@
-"""Agent 主入口 —— 组装配置、记忆、工具和运行器，启动交互循环。"""
+"""Agent 核心 —— 组装配置、记忆、工具和运行器。
+
+这是一个纯粹的库，不包含任何 I/O 或交互逻辑。
+可以嵌入任意外壳（CLI、TUI、RPC、HTTP）中使用。
+"""
 
 from __future__ import annotations
 from pathlib import Path
+from typing import Generator
 from .config import AppConfig
 from .conversation import Conversation
 from .runner import AgentRunner
@@ -16,7 +21,14 @@ from .prompts import PromptLoader
 
 
 class Agent:
-    """Agent 应用 —— 将配置、状态和执行引擎组装在一起。"""
+    """Agent 核心引擎 —— 组装组件，提供单一入口 process()。
+
+    用法:
+        agent = Agent(config)
+        for chunk in agent.process("你好"):
+            print(chunk, end="")
+        agent.shutdown()
+    """
 
     def __init__(
         self,
@@ -34,7 +46,7 @@ class Agent:
         # ── Agent 定义 ──
         agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
 
-        # ── Prompt 模板 ──
+        # ── Prompt 模板（暴露给外壳做 /command 展开）──
         self.prompt_loader = PromptLoader(cfg.root / "agent" / "prompts")
 
         # ── 记忆系统 ──
@@ -72,7 +84,23 @@ class Agent:
             thinking=thinking,
         )
 
-    # ── 构造方法 ──
+    # ── 公共 API ──
+
+    def process(self, message: str) -> Generator[str, None, None]:
+        """处理一条用户消息，流式产出 LLM 响应文本。
+
+        外壳负责：收集、打印、格式化这些文本块。
+        """
+        self.conversation.add_user_message(message)
+        yield from self.runner.step(self.conversation.history)
+
+    def shutdown(self) -> dict:
+        """关闭会话：返回 token 统计和压缩结果。"""
+        stats = self.conversation.token_stats()
+        compact_result = self.conversation.compact()
+        return {"token_stats": stats, "compact": compact_result}
+
+    # ── 内建方法 ──
 
     def _build_system_prompt(
         self,
@@ -137,101 +165,3 @@ class Agent:
         ))
 
         return registry
-
-    # ── 运行入口 ──
-
-    def run(self, initial_message: str = "", print_mode: bool = False) -> None:
-        """启动 agent。
-
-        print_mode=True: 处理 initial_message 后打印结果并退出。
-        print_mode=False: 进入交互式循环。
-        """
-        # 启动时打印加载的资源摘要
-        self._print_startup_info()
-
-        if print_mode:
-            self._run_print_mode(initial_message)
-        else:
-            self._run_interactive(initial_message)
-
-    def _run_print_mode(self, msg: str) -> None:
-        """非交互模式：处理一条消息，输出结果后退出。"""
-        msg = self._expand_command(msg)
-        self.conversation.add_user_message(msg)
-
-        for chunk in self.runner.step(self.conversation.history):
-            print(chunk, end="", flush=True)
-        print()
-
-        self._shutdown()
-
-    def _run_interactive(self, initial_message: str = "") -> None:
-        """交互式主循环。支持 /command 快捷调用 prompt 模板。"""
-        # 启动时展示可用命令
-        cmds = self.prompt_loader.list_commands()
-        if cmds:
-            print(cmds)
-
-        # 如果有初始消息，先处理
-        if initial_message:
-            msg = self._expand_command(initial_message)
-            self.conversation.add_user_message(msg)
-            print(f"[You] : {initial_message}")
-            print("[Assistant] : ", end="", flush=True)
-            for chunk in self.runner.step(self.conversation.history):
-                print(chunk, end="", flush=True)
-            print("\n")
-
-        while True:
-            user_input = input("[You] : ")
-            command = user_input.strip()
-            if command.lower() in {"exit", "quit"}:
-                self._shutdown()
-                break
-
-            msg = self._expand_command(command)
-            self.conversation.add_user_message(msg)
-
-            print("[Assistant] : ", end="", flush=True)
-            for chunk in self.runner.step(self.conversation.history):
-                print(chunk, end="", flush=True)
-            print("\n")
-
-    def _expand_command(self, user_input: str) -> str:
-        """将 /command query 展开为 prompt 模板。普通输入原样返回。"""
-        if not user_input.startswith("/"):
-            return user_input
-
-        parts = user_input.split(maxsplit=1)
-        name = parts[0][1:]  # 去 /
-        query = parts[1] if len(parts) > 1 else ""
-
-        resolved = self.prompt_loader.resolve(name, query)
-        if resolved:
-            print(f"[模板 /{name}] → {resolved[:60]}{'...' if len(resolved) > 60 else ''}")
-            return resolved
-
-        return user_input
-
-    def _print_startup_info(self) -> None:
-        """启动摘要：上下文文件、思考级别等"""
-        lines = [f"[miniagent] 模型: {self.config.model}"]
-        if self.runner.thinking:
-            lines.append(f"  思考级别: {self.runner.thinking}")
-        # 从系统提示词中提取上下文文件信息
-        sys_msg = self.conversation.history[0]["content"] if self.conversation.history else ""
-        if "### 项目上下文" in sys_msg:
-            lines.append("  上下文文件: 已加载 (AGENTS.md)")
-        print("\n".join(lines))
-
-    def _shutdown(self) -> None:
-        """退出前：打印统计、压缩记忆"""
-        stats = self.conversation.token_stats()
-        if stats:
-            print("\n[Tokens] 本次会话 Token 消耗统计:")
-            for m, s in stats.items():
-                print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
-
-        result = self.conversation.compact()
-        if result.get("summary") or result.get("preferences"):
-            print("[Memory] 已自动压缩并保存本次会话记录")
