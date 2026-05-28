@@ -64,29 +64,29 @@ class Agent:
             log_file=Path(cfg.memory_dir) / "tokens.jsonl"
         )
 
-        # ── 历史 ──
-        self.history: list[dict] = self.memory.history
-
         # ── 技能 / Agent 定义 / Prompt 模板 ──
         self._skills = SkillsLoader(skill_directory=cfg.skills_dir)
         self._agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
         self.prompt_loader = PromptLoader(cfg.root / "agent" / "prompts")
 
-        # ── 系统提示词 + 会话恢复 ──
+        # ── 会话恢复（从 JSONL 重建树 + history）──
+        restored = self.memory.restore_tree() if cfg.restore_session else False
+
+        # ── 历史（引用 memory 的列表，Runner 直接操作）──
+        self.history: list[dict] = self.memory.history
+
+        # ── 系统提示词（不写入树，只放在 history 头部）──
         system_prompt = self._build_system_prompt(self._skills, self._agent_loader)
-        self.memory.append_history({"role": "system", "content": system_prompt})
-        if cfg.restore_session:
-            old = self.memory.restore_history()
-            if old:
-                # 用 persist=False 避免将已持久化的消息重复写入 JSONL
-                for msg in old:
-                    self.memory.append_history(msg, persist=False)
-                # 注入前导上下文，让 LLM 知道这是历史记录而非待回答的问题
-                self.memory.history.insert(
-                    1,  # 紧跟 system 消息之后
-                    {"role": "user", "content": "[系统] 以下是上次会话的对话记录（仅作上下文参考，不需要回复其中内容）"}
-                )
-                print(f"[Agent] 已恢复 {len(old)} 条历史消息", flush=True)
+        self.history.insert(0, {"role": "system", "content": system_prompt})
+
+        if restored:
+            # 注入上下文分隔提示
+            self.history.insert(1, {
+                "role": "user",
+                "content": "[系统] 以下是上次会话的对话记录（仅作上下文参考，不需要回复其中内容）"
+            })
+            non_sys = [m for m in self.history if m.get("role") != "system"]
+            print(f"[Agent] 已恢复会话（{len(non_sys)} 条上下文消息）", flush=True)
 
         # ── 工具注册 ──
         registry = self._build_registry(self._skills, client, self._agent_loader)
@@ -119,8 +119,6 @@ class Agent:
         self.bus.emit("session:end", {})
         stats = self.tracker.stats_by_model()
         compact_result = self._do_compact()
-        # 无论是否触发压缩，始终同步 JSONL 到当前 history 状态
-        self._sync_history_file()
         return {"token_stats": stats, "compact": compact_result}
 
     # ── 内部 ──
@@ -134,13 +132,13 @@ class Agent:
         )
 
     def _do_compact(self) -> dict:
-        """执行压缩：Compactor 提取 → Memory 写入 → 截断历史。"""
-        orig_len = len(self.history)
-        non_system = [m for m in self.history if m.get("role") != "system"]
+        """执行压缩：Compactor 提取 → Memory 写入 → 树压缩 → 重建 history。"""
+        non_system = self.memory.non_system_entries()
         if len(non_system) < 4:
             return {"summary": {}, "preferences": [], "facts": []}
 
-        data = self.compactor.compact(self.history)
+        orig_len = len(self.history)
+        data = self.compactor.compact(non_system)
 
         summary = data.get("summary", {})
         if any(summary.values()):
@@ -151,26 +149,38 @@ class Agent:
             )
 
         for p in data.get("preferences", []):
-            self.memory.add_user(p)  # add_user 已内置去重
+            self.memory.add_user(p)
 
-        # 去重：add_memory 内置去重，只统计新增数量
         new_facts = sum(
             1 for f in data.get("facts", [])
             if self.memory.add_memory(f.strip())
         )
 
-        # ★ 关键：截断 self.history，释放上下文
-        self._trim_history(data)
+        # ── 树压缩：找 first_kept（最近 2 个 user entry 中最早的）──
+        tree_entries = self.memory._tree.non_system_entries()
+        user_entries = [e for e in tree_entries if e.role == "user"]
+        if len(user_entries) >= 2:
+            first_kept = user_entries[-2]
+        else:
+            first_kept = tree_entries[-min(8, len(tree_entries))]
 
-        # 同步 JSONL 文件（只保留截断后的 assistant/tool 消息）
-        self._sync_history_file()
+        summary_text = self._format_compaction_summary(data)
+        self.memory.compress_tree(summary_text, first_kept.id,
+                                  self.tracker.last_input_tokens())
+
+        # ── 重建 Agent 的 history ──
+        # compress_tree 已经重建了 memory._history，重新获取引用
+        self.history = self.memory.history
+        # 重建系统提示词（含压缩摘要）
+        new_system = self._rebuild_system_prompt_with_summary(data)
+        self.history.insert(0, {"role": "system", "content": new_system})
 
         compacted = bool(summary or data.get("preferences") or new_facts)
         if compacted:
             usage = self.compactor._last_usage
             cost = f"压缩消耗 {usage.get('input', 0)}+{usage.get('output', 0)} tokens" if usage else ""
             print(
-                f"[Memory] 自动压缩: {orig_len} 条 → {len(self.history)} 条"
+                f"[Memory] 树压缩: {orig_len} 条 → {len(self.history)} 条"
                 + (f" (新增 {new_facts} 条事实)" if new_facts else "")
                 + (f" | {cost}" if cost else ""),
                 flush=True,
@@ -178,31 +188,20 @@ class Agent:
 
         return data
 
-    def _trim_history(self, data: dict) -> None:
-        """将 self.history 截断为：系统提示词（含压缩摘要）+ 最近 2 轮用户对话。"""
-        updated_system = self._rebuild_system_prompt_with_summary(data)
-
-        non_system = [m for m in self.history if m.get("role") != "system"]
-        # 按 user 消息分段，保留最后 2 个完整用户轮次
-        user_indices = [i for i, m in enumerate(non_system) if m.get("role") == "user"]
-        if len(user_indices) >= 2:
-            recent = non_system[user_indices[-2]:]
-        else:
-            recent = non_system[-8:]
-
-        # 确保以 user 消息开头（符合 API 消息交替要求）
-        while recent and recent[0].get("role") in ("tool", "assistant"):
-            recent.pop(0)
-
-        new_history: list[dict] = [
-            {"role": "system", "content": updated_system}
-        ] + recent
-
-        self.history.clear()
-        self.history.extend(new_history)
+    def _format_compaction_summary(self, data: dict) -> str:
+        """将 compactor 提取结果格式化为摘要文本。"""
+        summary = data.get("summary", {})
+        parts = []
+        if summary.get("critical"):
+            parts.append(f"关键事件: {summary['critical']}")
+        if summary.get("decision"):
+            parts.append(f"决策/产出: {summary['decision']}")
+        if summary.get("issue"):
+            parts.append(f"问题: {summary['issue']}")
+        return "\n".join(parts) if parts else "会话已压缩"
 
     def _rebuild_system_prompt_with_summary(self, compaction_data: dict) -> str:
-        """重建系统提示词：静态部分不变，动态部分（记忆/偏好）用最新内容。"""
+        """重建系统提示词：静态部分不变，动态部分刷新。"""
         commands = self.prompt_loader.list_commands()
         parts = ["你是一个智能助手，可以使用各种工具来帮助用户完成任务。"]
         if self.config.context_files:
@@ -216,7 +215,6 @@ class Agent:
             + ("\n".join(self.memory.user_preferences()) or "（当前没有用户偏好）")
         )
 
-        # 附加本次压缩摘要
         summary = compaction_data.get("summary", {})
         if any(summary.values()):
             lines = ["### 会话历史摘要（之前对话的压缩记录）"]
@@ -229,15 +227,6 @@ class Agent:
             parts.append("\n".join(lines))
 
         return "\n\n".join(parts)
-
-    def _sync_history_file(self) -> None:
-        """将 JSONL 历史文件与当前 self.history 同步（只保留 assistant/tool 消息）。"""
-        entries = [
-            m for m in self.history
-            if m.get("role") in ("assistant", "tool")
-        ]
-        if entries:
-            self.memory._rewrite_history(entries)
 
     def _setup_events(self) -> None:
         """注册核心事件监听器。在每轮 LLM 调用前检查是否需要压缩。"""

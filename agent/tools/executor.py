@@ -56,19 +56,29 @@ class ToolExecutor:
         for tc in tool_calls:
             name = tc["function"]["name"]
             args = self._parse_args(tc)
-            yield f"[执行工具: {name}...]\n"
+            yield f"\n[执行工具: {name}...]\n"
 
             # before 事件
+            blocked_result: str | None = None
             if self.bus:
-                responses = self.bus.emit("tool:before", {"name": name, "args": args | {}}, source="executor")
+                responses = self.bus.emit("tool:before", {"name": name, "args": args}, source="executor")
                 for resp in responses:
                     if isinstance(resp, dict) and resp.get("block"):
-                        result = f"[拦截] {name}: {resp.get('reason', '被事件拦截')}"
+                        blocked_result = f"[拦截] {name}: {resp.get('reason', '被事件拦截')}"
                         break
-                else:
-                    result = self._run_one(name, args)
-            else:
-                result = self._run_one(name, args)
+
+            if blocked_result:
+                yield {"id": tc["id"], "result": self._truncate(blocked_result)}
+                continue
+
+            # 流式执行工具，逐块产出
+            chunks: list[str] = []
+            for chunk in self._run_one(name, args):
+                if chunk:
+                    chunks.append(str(chunk))
+                    yield str(chunk)  # ← 实时输出！
+
+            result = "".join(chunks)
 
             # after 事件
             if self.bus:
@@ -91,15 +101,17 @@ class ToolExecutor:
             args = self._parse_args(tc)
 
             if self.bus:
-                responses = self.bus.emit("tool:before", {"name": name, "args": args | {}}, source="executor")
+                responses = self.bus.emit("tool:before", {"name": name, "args": args}, source="executor")
                 for resp in responses:
                     if isinstance(resp, dict) and resp.get("block"):
-                        raw = f"[拦截] {name}: {resp.get('reason', '被事件拦截')}"
-                        break
-                else:
-                    raw = self._run_one(name, args)
-            else:
-                raw = self._run_one(name, args)
+                        return tc["id"], name, f"[拦截] {name}: {resp.get('reason', '被事件拦截')}"
+            
+            # 并行模式下静默收集（输出交错会乱）
+            chunks: list[str] = []
+            for chunk in self._run_one(name, args):
+                if chunk:
+                    chunks.append(str(chunk))
+            raw = "".join(chunks)
 
             if self.bus:
                 responses = self.bus.emit("tool:after", {"name": name, "result": raw}, source="executor")
@@ -121,25 +133,35 @@ class ToolExecutor:
             if tc_id in results:
                 yield {"id": tc_id, "result": results[tc_id]}
 
-    def _run_one(self, name: str, args: dict) -> str:
+    def _run_one(self, name: str, args: dict):
+        """生成器: 逐块产出工具输出，最后一个值即完整结果。
+
+        串行模式: 调用方逐块 yield 给用户实时看进度
+        并行模式: 调用方静默收集，只取最终字符串
+        """
         tool = self.registry.get_tool(name)
         if not tool:
-            return f"[错误] 未找到工具 '{name}'"
-
-        if tool.supports_streaming:
-            chunks = []
-            try:
-                for chunk in tool.stream_execute(**args):
-                    if chunk:
-                        chunks.append(str(chunk))
-                return "".join(chunks)
-            except Exception as e:
-                return f"[错误] {name}: {e}"
+            yield f"[错误] 未找到工具 '{name}'"
+            return
 
         try:
-            return self.registry.call_tool(name, args)
-        except Exception as e:
-            return f"[错误] {name}: {e}"
+            validated = tool.cast_params(args)
+        except ValueError as e:
+            yield f"参数校验错误: {e}"
+            return
+
+        if tool.supports_streaming:
+            try:
+                for chunk in tool.stream_execute(**validated):
+                    if chunk:
+                        yield str(chunk)
+            except Exception as e:
+                yield f"[错误] {name}: {e}"
+        else:
+            try:
+                yield self.registry.call_tool(name, validated)
+            except Exception as e:
+                yield f"[错误] {name}: {e}"
 
     @staticmethod
     def _parse_args(tc: dict) -> dict:
