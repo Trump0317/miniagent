@@ -114,10 +114,12 @@ def _run_interactive(agent, initial_message: str = "") -> None:
 
         # ── 内置命令（不经过 LLM）──
         if command.startswith("/tree"):
-            _handle_tree(agent)
+            from agent.core.cli_helpers import handle_tree
+            handle_tree(agent)
             continue
         if command.startswith("/fork"):
-            _handle_fork(agent, command)
+            from agent.core.cli_helpers import handle_fork
+            handle_fork(agent, command)
             continue
 
         msg = _expand_command(agent.prompt_loader, command)
@@ -128,98 +130,6 @@ def _run_interactive(agent, initial_message: str = "") -> None:
         print("\n")
 
     _shutdown(agent)
-
-
-def _handle_tree(agent) -> None:
-    """显示会话分支树。"""
-    entries = agent.memory.get_tree_entries()
-    if not entries:
-        print("(空会话)")
-        return
-
-    # 构建 id → 序号映射
-    sorted_entries = sorted(entries, key=lambda e: e.timestamp)
-    id_to_num: dict[str, int] = {}
-    user_count = 0
-    for e in sorted_entries:
-        if e.role == "user":
-            user_count += 1
-            id_to_num[e.id] = user_count
-
-    leaf_id = agent.memory.leaf_id
-
-    def _print_tree(entry_id: str, prefix: str, depth: int) -> None:
-        entry = agent.memory.tree.get(entry_id)
-        if not entry:
-            return
-        if depth > 30:
-            return
-
-        marker = " ← 当前" if entry_id == leaf_id else ""
-        tag = "[压缩]" if entry.type == "compaction" else entry.role
-        content = (entry.content or entry.summary or "")[:60].replace("\n", " ")
-        num = id_to_num.get(entry_id)
-        num_str = f"[{num}] " if num else ""
-        print(f"{prefix}{num_str}{tag}: {content}{marker}")
-
-        children = agent.memory.tree.children_of(entry_id)
-        for i, child in enumerate(children):
-            is_last = i == len(children) - 1
-            connector = "└── " if is_last else "├── "
-            child_prefix = prefix + ("    " if is_last else "│   ")
-            print(f"{prefix}{connector}")
-            _print_tree(child.id, child_prefix, depth + 1)
-
-    if agent.memory.tree.root_id:
-        _print_tree(agent.memory.tree.root_id, "", 0)
-
-
-def _handle_fork(agent, command: str) -> None:
-    """分叉到指定 user 消息。
-
-    用法:
-      /fork       → fork 到最近一次 user 消息
-      /fork N     → fork 到第 N 条 user 消息
-    """
-    parts = command.split(maxsplit=1)
-    arg = parts[1] if len(parts) > 1 else ""
-
-    # 找树中所有 user entry（按 timestamp 排序）
-    all_entries = sorted(
-        [e for e in agent.memory.get_tree_entries() if e.role == "user"],
-        key=lambda e: e.timestamp,
-    )
-
-    if not all_entries:
-        print("[fork] 没有可 fork 的用户消息")
-        return
-
-    if not arg:
-        # 默认：fork 到倒数第 2 个 user 消息（如果有的话）
-        if len(all_entries) >= 2:
-            target = all_entries[-2]
-        else:
-            target = all_entries[-1]
-    else:
-        try:
-            n = int(arg)
-        except ValueError:
-            print(f"[fork] 无效参数: {arg}，请输入序号")
-            return
-        # 1-based 序号
-        if n < 1 or n > len(all_entries):
-            print(f"[fork] 序号超出范围: 1-{len(all_entries)}")
-            return
-        target = all_entries[n - 1]
-
-    agent.memory.fork(target.id)
-    agent.history = agent.memory.history
-    # 重建系统提示词
-    system = agent._build_system_prompt(agent._skills, agent._agent_loader)
-    agent.history.insert(0, {"role": "system", "content": system})
-
-    content = (target.content or "")[:60].replace("\n", " ")
-    print(f"[fork] 已分叉到: {content}")
 
 
 def _shutdown(agent) -> None:

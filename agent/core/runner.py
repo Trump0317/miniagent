@@ -69,7 +69,10 @@ class AgentRunner:
                         tool_calls_accum[idx] = {"id": None, "name": None, "arguments": ""}
                     for k in ("id", "name", "arguments"):
                         if k in chunk and chunk[k]:
-                            tool_calls_accum[idx][k] = chunk[k]
+                            if k == "arguments":
+                                tool_calls_accum[idx][k] += chunk[k]  # 拼接分片
+                            else:
+                                tool_calls_accum[idx][k] = chunk[k]   # id/name 覆盖
 
             # ── 2. 写入助手消息 ──
             # 确保 API 兼容：content 和 tool_calls 不能同时为空
