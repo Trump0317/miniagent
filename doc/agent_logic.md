@@ -1,6 +1,6 @@
 # Agent 逻辑说明文档
 
-本文档详细介绍了 explore 分支重构后的架构设计与核心逻辑。
+本文档详细介绍重构后的架构设计与核心逻辑。
 
 ## 1. 核心架构概述
 
@@ -10,22 +10,26 @@
 agent/
 ├── __init__.py         # 公共导出
 ├── ai/                 # AI 层 — Provider + LLM 调用 + 上下文
-│   ├── config.py       #   AppConfig: 多 Provider 智能检测
+│   ├── config.py       #   AppConfig: 多 Provider 智能检测 + 会话隔离
 │   ├── llm.py          #   LLMClient: 流式调用封装
 │   └── context.py      #   load_context_files: AGENTS.md 加载
 ├── core/               # 核心引擎 — 组装 + 运行 + 存储 + 压缩
-│   ├── agent.py        #   Agent: 组件组装入口 + 压缩编排
+│   ├── agent.py        #   Agent: 纯装配层 (~130 行)
 │   ├── runner.py       #   AgentRunner: think-act 循环
+│   ├── session_tree.py #   SessionTree: 树状会话（分叉/导航/压缩）
+│   ├── system_prompt.py#   SystemPrompt: 系统提示词构建（实时查询 memory）
+│   ├── compaction.py   #   CompactionService: 压缩编排
 │   ├── events.py       #   EventBus: 发布/订阅事件总线
-│   ├── memory.py       #   AgentMemory: 纯存储层（文件 I/O）
+│   ├── memory.py       #   AgentMemory: 纯存储层（树为唯一数据源 + 三层记忆）
 │   ├── compactor.py    #   Compactor: LLM 提取摘要/偏好/事实
 │   ├── tracker.py      #   TokenTracker: Token 消耗统计
-│   └── prompts.py      #   PromptLoader: 命令模板加载
+│   ├── prompts.py      #   PromptLoader: 命令模板加载
+│   └── cli_helpers.py  #   handle_tree/fork/back
 └── tools/              # 工具层 — 扁平布局，每工具一个文件
-    ├── base.py         #   Tool 基类 + JSON Schema 瘦身
-    ├── registry.py     #   ToolRegistry: 工具注册表
+    ├── base.py         #   Tool 基类 + Schema 瘦身（保留 anyOf+default）
+    ├── registry.py     #   ToolRegistry: 工具注册表 + 错误纠错
     ├── executor.py     #   ToolExecutor: 串行/并行调度
-    ├── bash.py         #   终端命令
+    ├── bash.py         #   终端命令（空输出确认）
     ├── file_read.py    #   文件读取
     ├── file_write.py   #   文件写入
     ├── file_edit.py    #   文件编辑（模糊匹配）
@@ -33,35 +37,16 @@ agent/
     ├── web_search.py   #   网络搜索
     ├── skill.py        #   技能加载
     ├── todo.py         #   待办管理
-    └── subagent.py     #   子代理（单/并行/链式）
+    └── subagent.py     #   SubagentRunner + SubagentTool（单/并行/链式）
 ```
 
 ### 设计原则
 
-1. **事件驱动** — `EventBus` 解耦各组件，通过事件（`turn:start`、`context:high`、`history:appended` 等）通信，组件只 emit 不关心谁来消费
-2. **存储与压缩分离** — `AgentMemory` 只做纯文件 I/O，`Compactor` 只做 LLM 提取，互不依赖
-3. **零中间层** — 无 `Conversation` / `Hooks` 抽象，`Agent` 直接编排 `Runner` + `Memory` + `Compactor`
-4. **扁平工具** — 每个工具一个 `.py` 文件，不再嵌套子目录；`base.py` / `registry.py` / `executor.py` 独立模块
-
-### 核心文件对照（重构前 → 重构后）
-
-| 重构前 | 重构后 | 变化 |
-|--------|--------|------|
-| `config.py` (115 行) | `ai/config.py` (141 行) | 集中配置 + Provider 预设 |
-| `conversation.py` (80 行) | **已删除** | 职责由 Memory + Compactor + EventBus 分担 |
-| `loop.py` (140 行) | `core/agent.py` (254 行) | Agent 组装 + 压缩编排 + 事件注册 |
-| `runner.py` (265 行) | `core/runner.py` (119 行) | 纯 think-act 循环，不持有状态 |
-| `memory.py` (265 行) | `core/memory.py` (269 行) | 纯存储 + 去重 |
-| `hooks.py` (65 行) | **已删除** | 事件钩子改用 EventBus 事件 |
-| — | `core/events.py` (94 行) | **新增**: 事件总线 |
-| — | `core/compactor.py` (104 行) | **新增**: LLM 压缩提取 |
-| `prompts.py` (90 行) | `core/prompts.py` (97 行) | 无大变化 |
-| `tokentracker.py` (70 行) | `core/tracker.py` (69 行) | 新增 `reset_session()` |
-| — | `ai/llm.py` (91 行) | **新增**: LLM 流式客户端封装 |
-| — | `ai/context.py` (57 行) | **新增**: 上下文文件加载 |
-| `tools/BashTool/...` | `tools/bash.py` | 扁平化 |
-| — | `tools/base.py` | 新增 Schema 瘦身 |
-| — | `tools/executor.py` | **新增**: 工具执行器独立 |
+1. **树状会话** — SessionTree 管理对话分支，分叉不丢数据，压缩插入 COMPACT 节点
+2. **无列表双写** — AgentMemory 以 SessionTree 为唯一数据源，history 是 tree.build_context() 的实时计算
+3. **事件驱动** — EventBus 解耦各组件，通过 turn:start / context:high / tool:before / tool:after 等事件通信
+4. **存储与压缩分离** — AgentMemory 只做纯 I/O + 树操作，Compactor 只做 LLM 提取，CompactionService 编排两者
+5. **扁平工具** — 每个工具一个 .py 文件
 
 ---
 
@@ -69,11 +54,11 @@ agent/
 
 ### 2.1 AppConfig (`agent/ai/config.py`)
 
-集中管理所有可配置项，替代之前散落各处的硬编码参数。
+集中管理所有可配置项，支持多 Provider 和会话隔离。
 
 - **多 Provider 支持**：`PROVIDER_PRESETS` 定义 `deepseek` / `openai` / `custom` 三组预设
 - **智能检测**：`from_env()` 自动根据环境变量（`DEEPSEEK_API_KEY` → `OPENAI_API_KEY` → `API_KEY`）选择 Provider
-- **可覆盖**：所有参数都可通过 `overrides` 传入
+- **会话隔离**：每个会话自动生成 `session_id`（时间戳 + 微秒），会话文件存储在 `sessions/<session_id>/` 目录
 
 ```python
 # 自动检测
@@ -82,8 +67,8 @@ config = AppConfig.from_env()
 # 显式指定
 config = AppConfig.from_env(provider="openai", model="gpt-4o")
 
-# 完整覆盖
-config = AppConfig(api_key="sk-xxx", api_base_url="https://api.openai.com/v1", model="gpt-4o")
+# 恢复最近会话
+config = AppConfig.from_env(restore_session=True)
 ```
 
 关键配置项：
@@ -95,7 +80,8 @@ config = AppConfig(api_key="sk-xxx", api_base_url="https://api.openai.com/v1", m
 | `max_tokens` | 20_000 | LLM 单次最大输出 |
 | `max_context` | 200_000 | 上下文窗口上限 |
 | `compact_threshold` | 0.35 | 上下文使用率阈值，触发压缩 |
-| `restore_session` | True | 启动时恢复上次会话 |
+| `restore_session` | False | 默认不恢复，用 -r 恢复 |
+| `session_id` | 自动生成 | 会话标识 |
 | `subagent_model` | 同 model | 子代理默认模型 |
 | `subagent_max_turns` | 15 | 子代理最大轮数 |
 
@@ -111,149 +97,111 @@ config = AppConfig(api_key="sk-xxx", api_base_url="https://api.openai.com/v1", m
 {"type": "usage",       "input": 100, "output": 50, "cache_hit": 0, "cache_miss": 0}
 ```
 
-支持 `thinking` 参数控制推理努力程度（`off` / `minimal` / `low` / `medium` / `high` / `xhigh`），映射到 DeepSeek 的 `reasoning_effort`。
+支持 `thinking` 参数控制推理努力程度（`off` / `minimal` / `low` / `medium` / `high` / `xhigh`）。
 
 ### 2.3 Agent (`agent/core/agent.py`)
 
-核心组装器，创建并连接所有组件：
+纯装配层（~130 行），创建并连接所有组件：
 
 ```
 Agent.__init__
 ├── AppConfig          — 配置
 ├── EventBus           — 事件总线
-├── AgentMemory        — 纯存储（文件 I/O）
+├── AgentMemory        — 纯存储（树 + 三层记忆）
 ├── Compactor          — 压缩器（LLM 提取）
 ├── TokenTracker       — Token 统计
+├── SystemPrompt       — 系统提示词构建器
+├── CompactionService  — 压缩编排服务
 ├── SkillsLoader       — 技能加载
 ├── AgentLoader        — 子代理定义加载
 ├── PromptLoader       — 命令模板加载
-├── ToolRegistry       — 工具注册（主 + 子代理）
+├── ToolRegistry       — 工具注册（_build_registry 工厂函数）
 ├── LLMClient          — LLM 客户端
 ├── ToolExecutor       — 工具执行器
 ├── AgentRunner        — 执行引擎
 └── _setup_events()    — 注册事件监听
 ```
 
-#### 压缩编排 (`_do_compact()`)
+#### 内部组件
 
-压缩流程是 `Agent` 的核心职责：
+**SystemPrompt** (`system_prompt.py`): 持有静态上下文引用，`build(compaction_data=None)` 实时查询 memory 的动态部分（brief_context、user_preferences），保证每次调用反映最新状态。
 
+**CompactionService** (`compaction.py`): 编排完整压缩流程：
 ```
-_do_compact()
+compact()
 ├── compactor.compact(history)          → 提取 summary / preferences / facts
 ├── memory.append_summary(...)          → 写入 summaries/*.md
 ├── memory.add_user(p)                  → 写入 user.md（内置去重）
-├── memory.add_memory(f)                → 写入 memory.md（内置去重，返回是否新增）
-├── _trim_history(data)                 → 截断 self.history
-│   ├── _rebuild_system_prompt_with_summary()  → 重建系统提示词
-│   └── history.clear() + extend(系统 + 最近 2 轮)
-└── _sync_history_file()                → 同步 history.jsonl
+├── memory.add_memory(f)                → 写入 memory.md（内置去重）
+├── memory.compress_tree(summary, first_kept_id, tokens)
+│   └── tree.compact() → 插入 COMPACT 节点 + JSONL 全量持久化
+└── prompt.build(data) → 重建系统提示词 ← 返回给 Agent
 ```
 
-#### 历史截断 (`_trim_history()`)
+#### 请求处理
 
-压缩后将 `self.history` 截断为：
-1. **系统提示词** — 包含压缩摘要、最新记忆、用户偏好
-2. **最近 2 轮用户对话** — 保留上下文连续性
-
-这样既释放了窗口空间，又保留了必要上下文。
-
-#### 动态系统提示词 (`_rebuild_system_prompt_with_summary()`)
-
-压缩后重建系统提示词，包含：
-- 基础角色描述
-- 项目上下文文件（AGENTS.md）
-- 可用技能 / 子代理 / 命令列表
-- 长期记忆最近摘要（`memory.md` + `summaries/`）
-- 用户偏好（`USER.md`）
-- **本次压缩摘要**（critical / decision / issue）
+```
+Agent.process(message)
+├── bus.emit("message:received")
+├── memory.append_message(user msg)       → 树 + JSONL
+├── context = _build_context()            → [system] + memory.history 快照
+├── runner.step(context)                  → Runner 在快照上工作
+└── 扫描 context 增量 → memory.append_message(...) → 持久化
+```
 
 #### 事件绑定 (`_setup_events()`)
 
 | 事件 | 触发时机 | 处理 |
 |------|----------|------|
-| `context:high` | 上下文达到阈值 | 执行 `_do_compact()` |
-| `turn:start` | 每轮 LLM 调用前 | 检查 `_should_compact()`，必要时 emit `context:high` |
-| `history:appended` | Runner 写入历史消息后 | 持久化到 JSONL |
+| `context:high` | 上下文达到阈值 | 执行 CompactionService.compact() |
+| `turn:start` | 每轮 LLM 调用前 | 检查 should_compact()，必要时 emit context:high |
 
-### 2.4 EventBus (`agent/core/events.py`)
+### 2.4 SessionTree (`agent/core/session_tree.py`)
 
-轻量级发布/订阅事件总线，替代旧的 `hooks.py` 回调模式。
+树状会话结构，替代线性列表。核心操作：
 
-特性：
-- **通配符匹配** — `"tool:*"` 匹配 `"tool:before"` / `"tool:after"`
-- **一次性监听** — `once()` 注册只触发一次的监听器
-- **返回值收集** — `emit()` 返回所有监听器返回值，实现拦截器模式
-- **装饰器友好** — `@bus.on("event:name")` 直接注册
+| 操作 | 说明 |
+|------|------|
+| `append()` | 在 leaf 下创建子节点 |
+| `compact()` | 插入 COMPACT 节点 + 重排 parent_id |
+| `fork(id)` / `navigate(id)` | 移动 leaf 指针（不修改数据） |
+| `path()` | 从 root 沿 parent_id 走到 leaf |
+| `build_context()` | 构建 LLM 消息列表，遇 COMPACT 跳过已压缩消息 |
 
-```python
-bus = EventBus()
+### 2.5 AgentMemory (`agent/core/memory.py`)
 
-# 注册
-@bus.on("tool:before")
-def intercept(event):
-    if event.data["name"] == "bash":
-        return {"block": True, "reason": "只读模式"}
-
-# 一次性
-bus.once("startup", lambda e: print("ready"))
-
-# 发布
-results = bus.emit("tool:before", {"name": "bash", "args": {}})
-```
-
-### 2.5 AgentRunner (`agent/core/runner.py`)
-
-纯粹的执行引擎，**不持有会话状态**，`history` 作为参数传入。
-
-关键流程 (`step` 方法)：
-
-```
-for turn in range(max_turns):
-    1. emit("turn:start")
-    2. LLM 流式调用 → 逐 chunk 产出 text + tool_calls
-    3. 写入 assistant 消息到 history
-    4. emit("history:appended", {"message": assistant_msg})
-    5. 无 tool_calls → emit("turn:end") → return
-    6. tool_executor.execute(tool_calls) → 串行/并行调度
-    7. 写入 tool 结果到 history
-    8. emit("history:appended", {"message": tool_msg})
-    9. 循环
-```
-
-**API 兼容处理**：当 assistant message 的 `content` 为 None 且无 `tool_calls` 时，用 `reasoning_content` 或空字符串填充，避免 API 校验失败。
-
-### 2.6 AgentMemory (`agent/core/memory.py`)
-
-纯存储层，**不调用 LLM，不关心压缩逻辑**。
+**树为唯一数据源**，无列表双写：
+- `history` (property) → `tree.build_context()` 实时计算
+- **唯一写入入口**: `append_message(msg)` → 树追加 + JSONL 增量写
+- **fork 跳转栈**: `push_fork()` / `pop_fork()` 支持 `/back` 返回
 
 三层记忆结构：
 
 ```
 agent/.memory/
-├── history.jsonl     # 对话历史（JSONL 持久化，只存 assistant/tool 消息）
-├── memory.md         # 长期记忆（追加事实，系统提示词引用）
-├── summaries/        # 每日摘要（按日期 YYYY-MM-DD.md）
-└── user.md           # 用户偏好（列表，系统提示词引用）
+├── memory.md              ← 长期记忆（跨会话，追加事实 + 自动去重）
+├── user.md                ← 用户偏好（跨会话，追加偏好 + 自动去重）
+├── summaries/             ← 每日摘要（跨会话，按日期 YYYY-MM-DD.md）
+└── sessions/
+    └── <session_id>/      ← 会话私有目录
+        ├── history.jsonl  ← 树结构对话历史
+        └── tokens.jsonl   ← Token 消耗日志
 ```
 
-关键方法：
+### 2.6 AgentRunner (`agent/core/runner.py`)
 
-| 方法 | 说明 |
-|------|------|
-| `append_history(msg, persist=True)` | 追加到内存 + JSONL |
-| `persist_message(msg)` | 只持久化到 JSONL（事件触发用） |
-| `restore_history(max=50)` | 从 JSONL 恢复上次会话 |
-| `_rewrite_history(entries)` | 重写 JSONL（压缩后同步） |
-| `add_memory(fact)` → `bool` | 追加事实，自动去重，返回是否新增 |
-| `add_user(pref)` | 追加偏好，自动去重 |
-| `get_existing_facts()` | 读取已有事实集合 |
-| `get_existing_preferences()` | 读取已有偏好集合 |
-| `brief_context()` | 获取系统提示词所需的最近背景 |
+纯粹的执行引擎，**不持有会话状态**，不关心持久化。
 
-**去重机制**：`add_memory()` 和 `add_user()` 写入前先检查 `get_existing_facts()` / `get_existing_preferences()` 集合，避免重复存储。
-
-**会话恢复**：只恢复 `assistant` 和 `tool` 消息（不恢复 `user`），通过插入上下文分隔提示消息让 LLM 区分历史与待回答内容。
+```
+for turn in range(max_turns):
+    1. emit("turn:start")
+    2. LLM 流式调用 → 逐 chunk 产出 text + tool_calls
+    3. context.append(assistant_msg)           # 在 Agent 给的快照上操作
+    4. 无 tool_calls → 返回
+    5. tool_executor.execute(tool_calls) → 串行/并行调度
+    6. context.append(tool_msg)
+    7. 循环
+```
 
 ### 2.7 Compactor (`agent/core/compactor.py`)
 
@@ -263,38 +211,14 @@ agent/.memory/
 result = compactor.compact(history)
 # {
 #   "summary": {"critical": "关键事件", "decision": "决策", "issue": "问题"},
-#   "preferences": ["用户偏好1", "用户偏好2"],
-#   "facts": ["核心事实1", "核心事实2"]
+#   "preferences": ["用户偏好1"],
+#   "facts": ["核心事实1"]
 # }
 ```
 
-提取提示词约束：
-- 只分析最近 `k` 条消息（默认 10）
-- 总字数 < 150 字，每条偏好/事实 < 30 字
-- 不提取系统已知静态信息（工具数量、模型名称等）
-- 记录压缩的 token 消耗（`_last_usage`）
-
 ### 2.8 TokenTracker (`agent/core/tracker.py`)
 
-Token 消耗统计，JSONL 格式持久化。
-
-| 方法 | 说明 |
-|------|------|
-| `record(model, usage)` | 记录单次调用的 token 用量 |
-| `reset_session()` | 清空日志，开始新会话统计 |
-| `last_input_tokens()` | 获取上次调用的输入 token 数 |
-| `should_compact(max, threshold)` | 判断是否需要压缩 |
-| `stats_by_model()` | 按模型聚合统计 |
-| `stats_by_date()` | 按日期聚合统计 |
-
-### 2.9 参数上下文文件 (`agent/ai/context.py`)
-
-`load_context_files()` 从目录链自动加载上下文文件：
-
-1. 用户全局 `~/.miniagent/AGENTS.md`
-2. 从根到工作目录沿途的 `AGENTS.md` / `CLAUDE.md`
-
-拼接后注入系统提示词，CLI 可通过 `-nc` / `--no-context-files` 禁用。
+Token 消耗统计，目录延迟创建（首次 record() 时）。支持 `should_compact()` / `stats_by_model()` / `stats_by_date()`。
 
 ---
 
@@ -305,53 +229,30 @@ Token 消耗统计，JSONL 格式持久化。
 ```python
 @tool(name="my_tool", description="...", parameters=MyArgs)
 class MyTool(Tool):
-    parallel_safe: bool = True          # 是否可并发
-    supports_streaming: bool = False    # 是否支持流式执行
+    parallel_safe: bool = True
+    supports_streaming: bool = False
 
-    def execute(self, **kwargs) -> str:
-        ...
-
-    def stream_execute(self, **kwargs) -> Generator[str]:
-        ...
+    def execute(self, **kwargs) -> str: ...
+    def stream_execute(self, **kwargs) -> Generator[str]: ...
 ```
 
-**JSON Schema 瘦身** (`_minify_schema()`)：剔除 LLM 不需要的冗余字段（`title` / `default` / `additionalProperties`），简化 `anyOf[{type:X}, {type:null}]` 结构，缩减 tool schema 的 token 消耗。
+**Schema 瘦身** (`_minify_schema()`): 仅删除 `title` / `additionalProperties`，**保留** `anyOf[{type}, {null}]` 和 `default` 值，帮助 LLM 准确识别可选参数。
 
 ### 3.2 ToolRegistry (`agent/tools/registry.py`)
 
-管理所有工具实例，提供注册、查询、schema 生成和调用功能。
-
-```python
-registry = ToolRegistry()
-registry.register(BashTool())
-registry.register(FileReadTool())
-
-schemas = registry.get_tool_schemas()  # 缓存优化
-result = registry.call_tool("bash_tool", {"command": "ls"})
-```
+管理工具实例，提供注册、schema 生成和调用功能。错误检测使用 `"error" in result.lower()` 覆盖所有工具的错误格式，自动追加纠错提示 `[分析上述错误并尝试不同的方案。]`。
 
 ### 3.3 ToolExecutor (`agent/tools/executor.py`)
 
-负责工具的实际执行策略：
+执行策略：
+1. **串行** — 单个工具，或存在非 `parallel_safe` 工具时降级
+2. **并行** — 全部 `parallel_safe` 时 ThreadPoolExecutor 并发（最多 8）
+3. **事件拦截** — tool:before / tool:after 事件钩子
+4. **结果截断** — 50KB / 2000 行
 
-1. **串行策略** — 单个工具，或存在非 `parallel_safe` 工具时降级串行
-2. **并行策略** — 多工具全部 `parallel_safe` 时，使用 `ThreadPoolExecutor` 并发（最多 8 并发）
-3. **事件拦截** — 执行前后 emit `tool:before` / `tool:after` 事件，监听器可 `{"block": True}` 拦截
-4. **结果截断** — 自动截断超过 50KB 或 2000 行的输出
+### 3.4 BashTool (`agent/tools/bash.py`)
 
-### 3.4 工具一览
-
-| 工具 | 文件 | 特性 |
-|------|------|------|
-| **BashTool** | `bash.py` | 安全护栏 + 流式输出（Popen 逐行） |
-| **FileReadTool** | `file_read.py` | 文件读取，支持 offset/limit |
-| **FileWriteTool** | `file_write.py` | 创建或覆盖文件 |
-| **FileEditTool** | `file_edit.py` | 精确匹配 + 忽略缩进的模糊匹配 |
-| **WebFetchTool** | `web_fetch.py` | 网页抓取 |
-| **WebSearchTool** | `web_search.py` | 网络搜索 |
-| **SkillTool** | `skill.py` | 加载预定义技能 |
-| **TodoWriteTool** | `todo.py` | 待办列表 CRUD，`parallel_safe=False` |
-| **SubagentTool** | `subagent.py` | 单/并行/链式子代理 |
+安全护栏 + 流式输出。`stream_execute` 无输出时返回 `"[命令执行成功，无输出。]"` 避免 LLM 困惑。
 
 ---
 
@@ -359,92 +260,72 @@ result = registry.call_tool("bash_tool", {"command": "ls"})
 
 ### 4.1 AgentLoader
 
-扫描 `agent/subagent/*.md`，解析 Markdown + YAML frontmatter 为 `AgentDefinition`：
+扫描 `agent/subagent/*.md`，解析 Markdown + YAML frontmatter 为 `AgentDefinition`。
 
-```markdown
----
-name: scout
-description: 快速侦查代码库
-tools: bash_tool, file_read_tool
-model: deepseek-v4-flash
-max_turns: 10
----
-你是代码库侦查员...
-```
+### 4.2 SubagentRunner
 
-### 4.2 SubagentTool
+封装子代理的创建和运行逻辑（LLMClient + ToolExecutor + TokenTracker + AgentRunner 组装）。SubagentTool 通过它运行单个子代理，避免组装逻辑重复。
 
-支持三种调用模式：
+### 4.3 SubagentTool
 
+三种调用模式：
 ```
 单模式:   subagent_tool(task="分析代码", agent="scout")
-并行模式: subagent_tool(tasks=[{task:"A"}, {task:"B"}, {task:"C"}])
+并行模式: subagent_tool(tasks=[{task:"A"}, {task:"B"}])
 链式模式: subagent_tool(chain=[{task:"Step1"}, {task:"Step2+{previous}"}])
 ```
 
-每个子代理拥有：
-- 独立的 `history` 列表和 `TokenTracker`
-- 独立的 `ToolRegistry`（或根据定义过滤）
-- 独立的 `AgentRunner` 实例
-- 子代理 token 消耗汇总到父 tracker
+每个子代理拥有独立的 history / TokenTracker / ToolRegistry / AgentRunner 实例。
 
 ---
 
 ## 5. 工作流示意
 
 ```
-用户: /scout agent/core/agent.py
-        │
-        ▼
-agent.py._expand_command()
-   → PromptLoader.resolve("scout", "agent/core/agent.py")
-   → "先用 scout 子代理快速侦查 agent/core/agent.py..."
-        │
-        ▼
-Agent.process(message)
-   ├── bus.emit("message:received")
-   ├── memory.append_history({"role": "user", ...})
-   └── runner.step(history)
-         │
-         ▼
-AgentRunner.step(history)
-   ┌── bus.emit("turn:start")
-   │     └── Agent 检查 → should_compact? → emit("context:high") → _do_compact()
-   ├── LLM 流式调用 ──→ yield 文本
-   ├── 解析 tool_calls: [{name: "subagent_tool", args: {agent: "scout", task: "..."}}]
-   ├── bus.emit("history:appended", {assistant_msg})
-   │     └── Agent 持久化到 JSONL
-   ├── tool_executor.execute(tool_calls)
-   │     ├── bus.emit("tool:before") → 可拦截
-   │     ├── SubagentTool.execute()
-   │     │     ├── AgentLoader.get("scout") → AgentDefinition
-   │     │     └── 独立 AgentRunner(registry=filtered, model=deepseek-v4-flash)
-   │     └── bus.emit("tool:after") → 可修改结果
-   ├── bus.emit("history:appended", {tool_msg})
-   │     └── Agent 持久化到 JSONL
-   └── 循环直到无 tool_calls
-         │
-         ▼
-   产出响应文本
-         │
-         ▼
+用户输入 → Agent.process(message)
+   ├── memory.append_message(user msg)         → 树 + JSONL
+   ├── _build_context()                        → [system] + tree.build_context()
+   ├── runner.step(context)
+   │     ├── turn:start → should_compact? → compact()
+   │     ├── LLM.stream() → yield 文本
+   │     ├── ToolExecutor.execute()
+   │     └── 循环
+   ├── 扫描 context 增量 → memory.append_message(...)
+   └── 返回响应
+
 Agent.shutdown()
-   ├── stats = tracker.stats_by_model()
-   ├── _do_compact()          # 最终压缩
-   └── _sync_history_file()   # 同步 JSONL
+   └── CompactionService.compact()
+        ├── Compactor.compact() → 提取
+        ├── Memory 分发（三层记忆）
+        ├── memory.compress_tree() → COMPACT + JSONL
+        └── SystemPrompt.build(data) → 重建提示词
 ```
 
 ---
 
-## 6. 事件系统全景
+## 6. 事件系统
 
 | 事件 | 来源 | 消费者 | 用途 |
 |------|------|--------|------|
 | `message:received` | `Agent.process()` | 外部监听 | 记录用户输入 |
-| `turn:start` | `Runner.step()` 开始 | `Agent._setup_events()` | 每轮检查是否需要压缩 |
-| `turn:end` | `Runner.step()` 结束 | 外部监听 | 轮次统计 |
+| `turn:start` | `Runner.step()` | `Agent._setup_events()` | 每轮检查压缩 |
 | `context:high` | `Agent._setup_events()` | `Agent._setup_events()` | 触发压缩 |
-| `history:appended` | `Runner.step()` 写入后 | `Agent._setup_events()` | 持久化到 JSONL |
-| `tool:before` | `ToolExecutor` 执行前 | 外部监听（拦截器） | 拦截/修改工具调用 |
-| `tool:after` | `ToolExecutor` 执行后 | 外部监听 | 修改工具结果 |
+| `tool:before` | `ToolExecutor` | 外部监听 | 拦截/修改工具调用 |
+| `tool:after` | `ToolExecutor` | 外部监听 | 修改工具结果 |
 | `session:end` | `Agent.shutdown()` | 外部监听 | 会话结束通知 |
+
+（`history:appended` 事件已移除 — Runner 不再负责持久化，Agent 在 process() 末端统一处理）
+
+---
+
+## 7. CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `/fork [n]` | 分叉到第 n 条用户消息，保存当前位置到跳转栈 |
+| `/back` | 弹出跳转栈，返回分叉前的位置 |
+| `/tree` | 显示会话分支树可视化 |
+| `/scout <query>` | 展开为 scout 子代理侦查任务 |
+| `/review <query>` | 展开为 reviewer 子代理审查任务 |
+
+`-r` / `--restore` 启动时恢复最近一次有内容的会话。

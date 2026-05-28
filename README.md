@@ -1,6 +1,6 @@
 # miniagent
 
-一个基于 LLM 的智能助手框架，采用 ReAct 模式 + 事件驱动架构，支持工具调用、多 Provider 切换、子代理、会话恢复、上下文压缩等功能。
+一个基于 LLM 的智能助手框架，采用 ReAct 模式 + 事件驱动架构，支持工具调用、多 Provider 切换、子代理、会话分叉、上下文压缩、三层记忆等功能。
 
 ## 快速开始
 
@@ -14,8 +14,11 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入 API Key（支持 DeepSeek / OpenAI / 自定义）
 
-# 3. 启动
+# 3. 启动（新会话）
 ./run.sh
+
+# 恢复最近会话
+./run.sh -r
 ```
 
 ## 架构
@@ -23,23 +26,27 @@ cp .env.example .env
 ```
 agent/
 ├── __init__.py         # 公共导出（Agent, EventBus, AppConfig, LLMClient）
-├── ai/                 # AI 相关（Provider 配置 + LLM 调用 + 上下文加载）
-│   ├── config.py       #   多 Provider 配置（DeepSeek/OpenAI/自定义）
+├── ai/                 # AI 层（Provider 配置 + LLM 调用 + 上下文加载）
+│   ├── config.py       #   多 Provider 配置 + 会话隔离
 │   ├── llm.py          #   LLM 客户端封装
 │   └── context.py      #   项目上下文文件加载
-├── core/               # 核心引擎（Agent 组装 + 运行器 + 存储）
-│   ├── agent.py        #   Agent 核心（组件组装 + process 入口 + 压缩编排）
+├── core/               # 核心引擎（Agent 装配 + 运行器 + 存储）
+│   ├── agent.py        #   Agent 核心（纯装配层，~130 行）
 │   ├── runner.py       #   执行引擎（LLM think-act 迭代）
+│   ├── session_tree.py #   树状会话（分叉/导航/压缩节点）
+│   ├── system_prompt.py#   系统提示词构建器（实时查询 memory）
+│   ├── compaction.py   #   压缩编排服务
 │   ├── events.py       #   事件总线（发布/订阅，组件解耦）
-│   ├── memory.py       #   纯存储层（JSONL 历史 + memory.md + 偏好管理）
-│   ├── compactor.py    #   压缩器（LLM 提取摘要/偏好/事实，不操作文件）
+│   ├── memory.py       #   纯存储层（树为唯一数据源 + 三层记忆）
+│   ├── compactor.py    #   压缩器（LLM 提取，不操作文件）
 │   ├── tracker.py      #   Token 消耗统计
-│   └── prompts.py      #   Prompt 模板加载器
+│   ├── prompts.py      #   Prompt 模板加载器
+│   └── cli_helpers.py  #   CLI 辅助（handle_tree/fork/back）
 ├── tools/              # 工具集（扁平布局，每个工具一个文件）
-│   ├── base.py         #   工具基类 + JSON Schema 瘦身
+│   ├── base.py         #   工具基类 + Schema 瘦身（保留 anyOf+default）
 │   ├── registry.py     #   工具注册表
-│   ├── executor.py     #   工具执行器
-│   ├── bash.py         #   终端命令
+│   ├── executor.py     #   工具执行器（串行/并行调度）
+│   ├── bash.py         #   终端命令（安全护栏 + 空输出确认）
 │   ├── file_read.py    #   文件读取
 │   ├── file_write.py   #   文件写入
 │   ├── file_edit.py    #   文件编辑（模糊匹配）
@@ -47,7 +54,7 @@ agent/
 │   ├── web_search.py   #   网络搜索
 │   ├── skill.py        #   技能加载
 │   ├── todo.py         #   待办管理
-│   └── subagent.py     #   子代理（单/并行/链式）
+│   └── subagent.py     #   SubagentRunner + SubagentTool
 ├── subagent/           # 子代理定义文件（Markdown + YAML）
 │   ├── scout.md        #   代码侦查员
 │   └── reviewer.md     #   代码审查员
@@ -57,10 +64,10 @@ agent/
 ```
 
 **设计原则：**
-- **事件驱动** — EventBus 解耦各组件，通过 `context:high` / `turn:start` / `history:appended` 等事件协作
-- **存储与压缩分离** — `Memory` 只做纯 I/O，`Compactor` 只做 LLM 提取，互不依赖
-- **零中间层** — 无 Conversation/Hooks 抽象，Agent 直接编排 Runner + Memory + Compactor
-- **扁平工具** — 每个工具一个 py 文件，不再嵌套子目录
+- **树状会话** — SessionTree 管理对话分支，分叉不丢数据，压缩插入 COMPACT 节点
+- **无列表双写** — `AgentMemory` 以树为唯一数据源，`history` 是 `tree.build_context()` 的实时计算
+- **事件驱动** — EventBus 解耦各组件
+- **扁平工具** — 每个工具一个 py 文件
 
 ## 功能清单
 
@@ -70,31 +77,32 @@ agent/
 | | 流式输出 | LLM 文本逐 token 显示 |
 | | 思维链 | 支持 DeepSeek R1 reasoning_content |
 | | 事件驱动 | EventBus 发布/订阅，组件完全解耦 |
-| **工具** | Bash | 终端命令，安全护栏拦截危险操作 |
+| **工具** | Bash | 终端命令，安全护栏拦截危险操作，空输出确认 |
 | | 文件读写 | read / write / edit（模糊匹配） |
 | | 网络 | fetch / search |
 | | Todo | 待办列表增删改查 |
 | | Skill | 加载预定义技能 |
-| | Subagent | 单 / 并行 / 链式子代理 |
+| | Subagent | 单 / 并行 / 链式子代理（SubagentRunner 独立封装） |
 | **安全** | 安全护栏 | 正则拦截 `rm -rf /` 等危险命令 |
 | | 工具拦截 | 事件钩子可阻止任意工具执行 |
+| | 错误纠错 | 所有工具错误自动附带重试提示 |
 | **性能** | 并行工具 | 多工具并发执行（ThreadPoolExecutor） |
 | | 流式工具 | BashTool 边执行边显示输出 |
 | | 结果截断 | 50KB/2000 行自动截断 |
-| | Schema 瘦身 | JSON Schema 剔除冗余字段（title/default/anyOf null），缩减 token |
+| | Schema 瘦身 | 仅删 title/additionalProperties，保留 anyOf+default |
 | **模型** | 多 Provider | DeepSeek / OpenAI / 自定义 API |
 | | 子代理模型 | 子代理可独立指定模型 |
-| **会话** | 会话恢复 | 重启自动加载上次对话历史（注入上下文分隔提示） |
-| | 主动压缩 | 每轮 turn:start 检查 token 阈值（默认 35%），提前触发压缩 |
-| | 历史截断 | 压缩后保留系统提示词 + 最近 2 轮用户对话，释放上下文窗口 |
-| | 动态提示词 | 压缩后重建系统提示词，注入压缩摘要、最新记忆和用户偏好 |
-| | 三层记忆 | 短期对话（JSONL）/ 每日摘要 / 长期记忆（memory.md） |
-| | 记忆去重 | 偏好和事实自动去重，避免重复存储 |
-| | JSONL 同步 | 压缩后自动同步 JSONL 文件，保持与内存 history 一致 |
-| **扩展** | 事件钩子 | context:high / turn:start / history:appended 等事件 |
+| **会话** | 会话隔离 | 每会话独立 sessions/<ts>/ 目录，互不干扰 |
+| | --restore | `-r` 标志恢复最近会话 |
+| | 分叉回退 | `/fork` 分叉 + `/back` 返回，跳转栈不丢位置 |
+| | 主动压缩 | 每轮检查 token 阈值（默认 35%），提前压缩 |
+| | 动态提示词 | 压缩后 SystemPrompt.build(data) 注入压缩摘要 |
+| | 三层记忆 | 短期对话 / 每日摘要 / 长期记忆（memory.md） |
+| | 记忆去重 | 偏好和事实自动去重 |
+| **扩展** | 事件钩子 | context:high / turn:start / tool:before / tool:after |
 | | Agent 定义 | Markdown + YAML 文件配置子代理 |
 | | Prompt 模板 | `/scout`, `/review` 等快捷命令 |
-| | Token 统计 | 按模型/日期聚合统计 + 新会话重置 |
+| | Token 统计 | 按模型/日期聚合统计 |
 
 ## 使用示例
 
@@ -111,6 +119,14 @@ agent/
 LICENSE  README.md  agent/  agent.py  ...
 ```
 
+### 会话管理
+```
+[You]: /fork           # 分叉到上一次用户消息
+[You]: /fork 3         # 分叉到第 3 条用户消息
+[You]: /back           # 返回分叉前的位置
+[You]: /tree           # 查看分支树
+```
+
 ### 子代理
 ```
 [You]: 用 scout 子代理找一下 agent/core/runner.py 里的方法
@@ -118,7 +134,6 @@ LICENSE  README.md  agent/  agent.py  ...
   ╭─ [子代理] 开始执行 ─
   ...侦查结果...
   ╰─ [子代理] 完成 ─
-## 找到的文件...
 ```
 
 ### 命令模板
