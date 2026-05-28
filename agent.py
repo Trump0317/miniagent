@@ -89,7 +89,7 @@ def _run_interactive(agent, initial_message: str = "") -> None:
     """交互式主循环。"""
     # 展示可用命令
     cmds = agent.prompt_loader.list_commands()
-    extra_cmds = "  /fork [n]  — 分叉到第 n 条用户消息\n  /tree      — 显示会话分支树"
+    extra_cmds = "  /fork [n]  — 分叉到第 n 条用户消息\n  /back      — 返回分叉前的位置\n  /tree      — 显示会话分支树"
     print((cmds + "\n" + extra_cmds) if cmds else extra_cmds)
 
     # 初始消息
@@ -116,6 +116,10 @@ def _run_interactive(agent, initial_message: str = "") -> None:
         if command.startswith("/tree"):
             from agent.core.cli_helpers import handle_tree
             handle_tree(agent)
+            continue
+        if command.startswith("/back"):
+            from agent.core.cli_helpers import handle_back
+            handle_back(agent)
             continue
         if command.startswith("/fork"):
             from agent.core.cli_helpers import handle_fork

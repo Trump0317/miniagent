@@ -40,6 +40,7 @@ class AgentMemory:
 
         # ── 树（唯一真相来源）──
         self._tree = SessionTree()
+        self._fork_stack: list[str] = []  # fork 跳转栈，记录每次分叉前的位置
 
         # 确保目录和文件存在
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -161,6 +162,21 @@ class AgentMemory:
     def get_tree_entries(self) -> list[SessionEntry]:
         """获取所有树条目的只读列表"""
         return list(self._tree._entries.values())
+
+    # ── fork 跳转栈 ──
+
+    def push_fork(self) -> None:
+        """保存当前位置到栈（/fork 前调用）。"""
+        if self._tree.leaf_id:
+            self._fork_stack.append(self._tree.leaf_id)
+
+    def pop_fork(self) -> str | None:
+        """弹出栈顶位置并导航过去（/back 使用）。返回目标 entry_id，栈空返回 None。"""
+        if not self._fork_stack:
+            return None
+        target = self._fork_stack.pop()
+        self._tree.navigate(target)
+        return target
 
     # ── JSONL 全量持久化 ──
 
