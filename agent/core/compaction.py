@@ -157,10 +157,14 @@ class CompactionService:
 
         return first_kept.id, to_summarize
 
-    # ── 内部：LLM 提取（原 Compactor）──
+    # ── 内部：LLM 提取 ──
 
     def _extract(self, history: list[dict]) -> dict[str, Any]:
-        """调用 LLM 从对话历史中提取摘要、偏好和事实。"""
+        """调用 LLM 从对话历史中提取摘要、偏好和事实。
+
+        如果树中已有之前的压缩节点，将其摘要作为迭代上下文传入，
+        让 LLM 在已有基础上增量更新，而非每次从头提取。
+        """
         effective = [m for m in history if m.get("role") != "system"]
         if len(effective) < 2:
             return {"summary": {}, "preferences": [], "facts": []}
@@ -168,12 +172,25 @@ class CompactionService:
         recent = effective[-self._COMPACT_K:]
         self._last_usage = {}
 
+        # ── 迭代压缩：获取上一次压缩摘要作为上下文 ──
+        previous = self._get_previous_summary()
+        user_parts = []
+        if previous:
+            user_parts.append(
+                "<previous_summary>\n"
+                + previous
+                + "\n</previous_summary>\n\n"
+                + "以上是之前对话的压缩摘要。以下是新的对话内容，"
+                + "请在上次摘要的基础上更新/补充提取信息："
+            )
+        user_parts.append(self._format_messages(recent))
+
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": self._EXTRACT_PROMPT},
-                    {"role": "user", "content": self._format_messages(recent)},
+                    {"role": "user", "content": "\n".join(user_parts)},
                 ],
                 response_format={"type": "json_object"},
             )
@@ -192,6 +209,18 @@ class CompactionService:
             }
 
         return self._normalize(data)
+
+    def _get_previous_summary(self) -> str | None:
+        """从当前树路径中获取最近一次压缩节点的摘要。
+
+        遍历 path（root → leaf），找到最后一个 compaction entry。
+        这是最近一次压缩的结果，用作迭代压缩的上下文。
+        """
+        path = self._memory._tree.path()
+        for entry in reversed(path):
+            if entry.type == "compaction" and entry.summary:
+                return entry.summary
+        return None
 
     @staticmethod
     def _format_messages(history: list[dict]) -> str:
