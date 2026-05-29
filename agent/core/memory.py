@@ -366,13 +366,16 @@ class AgentMemory:
 
     # ── 偏好与事实 ──
 
-    def user_preferences(self) -> list[str]:
-        """读取用户偏好列表。"""
+    def user_preferences(self, max_items: int = 0) -> list[str]:
+        """读取用户偏好列表。max_items > 0 时只返回最近 N 条。"""
         if not self.user_file.exists():
             return []
-        return [line.strip("- ").strip()
+        prefs = [line.strip("- ").strip()
                 for line in self.user_file.read_text(encoding="utf-8").split("\n")
                 if line.strip().startswith("-")]
+        if max_items > 0 and len(prefs) > max_items:
+            return prefs[-max_items:]
+        return prefs
 
     def add_user(self, preference: str) -> None:
         """追加用户偏好（自动去重）。"""

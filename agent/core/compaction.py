@@ -123,7 +123,7 @@ class CompactionService:
 
         返回 (first_kept_id, messages_to_summarize)。
         """
-        path = self._memory._tree.path()
+        path = self._memory.tree.path()
         msg_entries = [e for e in path if e.type == "message"]
         if len(msg_entries) < 4:
             return None, []
@@ -216,7 +216,7 @@ class CompactionService:
         遍历 path（root → leaf），找到最后一个 compaction entry。
         这是最近一次压缩的结果，用作迭代压缩的上下文。
         """
-        path = self._memory._tree.path()
+        path = self._memory.tree.path()
         for entry in reversed(path):
             if entry.type == "compaction" and entry.summary:
                 return entry.summary

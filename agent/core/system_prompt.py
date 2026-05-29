@@ -49,8 +49,8 @@ class SystemPrompt:
         parts.append(f"### 可用命令\n{self._commands.list_commands() or '（无）'}")
         parts.append(f"### 长期记忆（最近摘要）\n{self._memory.brief_context()}")
         parts.append(
-            f"### 用户偏好（USER.md）\n"
-            + ("\n".join(self._memory.user_preferences()) or "（当前没有用户偏好）")
+            f"### 用户偏好（USER.md，最近 10 条）\n"
+            + ("\n".join(self._memory.user_preferences(max_items=10)) or "（当前没有用户偏好）")
         )
 
         if compaction_data:
