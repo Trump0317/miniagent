@@ -2,15 +2,14 @@
 
 依赖:
     Agent
-    ├── EventBus         ← 事件总线
-    ├── AgentMemory      ← 纯存储（文件 I/O）
-    ├── Compactor        ← 记忆压缩（LLM 提取）
-    ├── TokenTracker     ← 用量统计
-    ├── SystemPrompt     ← 系统提示词构建
-    ├── CompactionService ← 压缩编排
-    ├── LLMClient        ← LLM 调用
-    ├── ToolExecutor     ← 工具调度
-    └── AgentRunner      ← think-act 编排
+    ├── EventBus          ← 事件总线
+    ├── AgentMemory       ← 纯存储（文件 I/O）
+    ├── TokenTracker      ← 用量统计
+    ├── SystemPrompt      ← 系统提示词构建
+    ├── CompactionService ← 压缩编排（含 LLM 提取 + 分发 + 树压缩 + 提示词重建）
+    ├── LLMClient         ← LLM 调用
+    ├── ToolExecutor      ← 工具调度
+    └── AgentRunner       ← think-act 编排
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from pathlib import Path
 from typing import Generator
 from ..ai.config import AppConfig
 from .memory import AgentMemory
-from .compactor import Compactor
 from .compaction import CompactionService
 from .system_prompt import SystemPrompt
 from .tracker import TokenTracker
@@ -96,7 +94,6 @@ class Agent:
         # ── 基础设施 ──
         self.bus = EventBus()
         self.memory = AgentMemory(memory_dir=cfg.memory_dir, session_dir=cfg.session_dir)
-        self.compactor = Compactor(client=client, model=cfg.model)
         self.tracker = TokenTracker(log_file=cfg.session_dir / "tokens.jsonl")
 
         # ── 技能 / 子代理 / 命令 ──
@@ -116,9 +113,10 @@ class Agent:
         self._skills = skills
         self._agent_loader = agent_loader
 
-        # ── 压缩编排 ──
+        # ── 压缩编排（含 LLM 提取 + 分发 + 树压缩 + 提示词重建）──
         self._compaction = CompactionService(
-            compactor=self.compactor,
+            client=client,
+            model=cfg.model,
             memory=self.memory,
             tracker=self.tracker,
             max_context=cfg.max_context,
@@ -193,14 +191,8 @@ class Agent:
 
     def _setup_events(self) -> None:
         """注册事件：每轮 LLM 调用前检查是否需要压缩。"""
-        @self.bus.on("context:high")
-        def _on_context_high(event):
-            self._system_prompt, _ = self._compaction.compact()
-
         @self.bus.on("turn:start")
         def _on_turn_start(event):
             if self._compaction.should_compact():
-                self.bus.emit("context:high", {
-                    "input_tokens": self.tracker.last_input_tokens(),
-                    "threshold": self.config.compact_threshold,
-                })
+                self.bus.emit("context:high", event)
+                self._system_prompt, _ = self._compaction.compact()
