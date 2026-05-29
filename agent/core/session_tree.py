@@ -245,17 +245,11 @@ class SessionTree:
 
         for entry in path_entries:
             if entry.type == "compaction":
-                # 保留 first_kept_id 及之后的 entry，丢弃之前的
-                if entry.first_kept_id and entry.first_kept_id in entry_map:
-                    trim_at = entry_map[entry.first_kept_id]
-                    kept = result[trim_at:]
-                else:
-                    kept = []
-                # compaction summary 放在最前面
+                # COMPACT 始终在 first_kept 之前，前面的内容全部替换为摘要
                 result = [{
                     "role": "user",
                     "content": f"[系统] 以下是之前对话的压缩记录:\n{entry.summary}",
-                }] + kept
+                }]
                 entry_map = {}
                 continue
 
