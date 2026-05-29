@@ -60,6 +60,16 @@ agent/
 └── prompts/            # Prompt 模板文件
     ├── scout.md        #   /scout 命令
     └── review.md       #   /review 命令
+└── tests/              # 单元测试（281 个，覆盖核心和工具层）
+    ├── test_events.py
+    ├── test_session_tree.py
+    ├── test_memory.py
+    ├── test_tracker.py
+    ├── test_prompts.py
+    ├── test_system_prompt.py
+    ├── test_compaction.py
+    ├── test_runner.py
+    └── test_tool_base.py
 ```
 
 **设计原则：**

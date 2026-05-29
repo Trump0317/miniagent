@@ -317,3 +317,43 @@ Agent.shutdown()
 | `/review <query>` | 展开为 reviewer 子代理审查任务 |
 
 `-r` / `--restore` 启动时恢复最近一次有内容的会话。
+
+---
+
+## 8. 测试
+
+测试采用先单元后集成的策略，每个模块经过三重审查（自审 → Subagent 审 → 人工审）后提交。
+
+### 覆盖状况
+
+截至 2026-05-29，已覆盖 **9 个模块，共 281 个单元测试**：
+
+| 模块 | 测试文件 | 测试数 |
+|------|----------|--------|
+| EventBus | `test_events.py` | 28 |
+| SessionTree | `test_session_tree.py` | 56 |
+| AgentMemory | `test_memory.py` | 59 |
+| TokenTracker | `test_tracker.py` | 27 |
+| PromptLoader | `test_prompts.py` | 21 |
+| SystemPrompt | `test_system_prompt.py` | 17 |
+| CompactionService | `test_compaction.py` | 29 |
+| AgentRunner | `test_runner.py` | 16 |
+| Tool 基类 + @tool 装饰器 | `test_tool_base.py` | 28 |
+
+### 运行
+
+```bash
+# 全部测试
+python -m unittest discover tests
+
+# 单个模块
+python -m unittest tests.test_events
+```
+
+### 审查流程
+
+```
+编写测试 → 自审 → Subagent(reviewer) 审 → 人工审 → 提交
+```
+
+每个审查环节发现问题会立即修复，审核通过后才进行下一模块的编写。

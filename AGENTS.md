@@ -267,3 +267,32 @@ agent/.memory/
 - 压缩阈值: `last_input_tokens > max_context * compact_threshold`（默认 200000 * 0.35 = 70K tokens）
 - `max_turns` 为 None 时不设上限
 - DeepSeek 流式 tool_call arguments 是逐字符分片，Runner 需用 `+=` 拼接
+
+## 测试
+
+测试采用先单元后集成的策略，每个模块编写后经过三重审查（自审 → Subagent 审 → 人工审）。
+
+### 运行
+
+```bash
+# 运行全部测试
+python -m unittest discover tests
+
+# 运行单个模块
+python -m unittest tests.test_events
+```
+
+### 已覆盖模块（截至 2026-05-29）
+
+| 模块 | 文件 | 测试数 | 类型 |
+|------|------|--------|------|
+| EventBus | `test_events.py` | 28 | 单元 |
+| SessionTree | `test_session_tree.py` | 56 | 单元 |
+| AgentMemory | `test_memory.py` | 59 | 单元 |
+| TokenTracker | `test_tracker.py` | 27 | 单元 |
+| PromptLoader | `test_prompts.py` | 21 | 单元 |
+| SystemPrompt | `test_system_prompt.py` | 17 | 单元 |
+| CompactionService | `test_compaction.py` | 29 | 单元 |
+| AgentRunner | `test_runner.py` | 16 | 单元 |
+| Tool 基类 | `test_tool_base.py` | 28 | 单元 |
+| **合计** | | **281** | |
