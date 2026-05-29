@@ -42,6 +42,9 @@ def handle_tree(agent: Agent) -> None:
         if entry.type == "compaction":
             summary = (entry.summary or "")[:50].replace("\n", " ")
             print(f"{prefix}[压缩] {summary}{marker}")
+        elif entry.role == "tool":
+            # 工具结果内容太长，只显示标记
+            print(f"{prefix}[tool] ✓{marker}")
         else:
             num = id_to_num.get(entry.id)
             num_str = f"[{num}] " if num else ""
