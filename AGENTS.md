@@ -225,14 +225,14 @@ agent/.memory/
 - `@file.py` 文件引用展开
 - 管道输入（`cat README.md | python agent.py -p "总结"`）
 - `/command` 模板展开（`/scout`, `/review`）
-- **`/fork [n]`** — 分叉到第 n 条用户消息（默认倒数第 2 条），创建新分支
+- **`/fork [n]`** — 分叉到第 n 条用户消息之前（默认倒数第 2 条），创建新分支（不含该消息）
 - **`/back`** — 返回分叉前的位置（利用 fork 跳转栈）
 - **`/tree`** — 显示会话分支树可视化
 
 ### 内置命令流程
 
 `/fork`、`/back` 和 `/tree` 不经过 LLM，直接在 CLI 层处理：
-1. `handle_fork()` → `memory.push_fork()` 保存当前位置 → `memory.fork(id)` → leaf 移动
+1. `handle_fork()` → `memory.push_fork()` 保存当前位置 → `memory.fork(target.parent_id)` → leaf 移到目标消息之前
 2. `handle_back()` → `memory.pop_fork()` 弹栈 → `memory.navigate(id)` 返回
 3. `handle_tree()` → 遍历树节点 → 打印带缩进的树状视图（含 `[压缩]` 和 `← 当前` 标记）
 

@@ -120,8 +120,8 @@ LICENSE  README.md  agent/  agent.py  ...
 
 ### 会话管理
 ```
-[You]: /fork           # 分叉到上一次用户消息
-[You]: /fork 3         # 分叉到第 3 条用户消息
+[You]: /fork           # 分叉到上一次用户消息之前
+[You]: /fork 3         # 分叉到第 3 条用户消息之前
 [You]: /back           # 返回分叉前的位置
 [You]: /tree           # 查看分支树
 ```
