@@ -25,10 +25,9 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
     │   ├── runner.py              ← AgentRunner: think-act 循环编排
     │   ├── session_tree.py        ← SessionTree: 树状会话（分叉/导航/压缩节点）
     │   ├── system_prompt.py       ← SystemPrompt: 系统提示词构建（实时查询 memory 动态部分）
-    │   ├── compaction.py          ← CompactionService: 压缩编排（提取 → 分发 → 树压缩 → 重建提示词）
+    │   ├── compaction.py          ← CompactionService: 压缩编排（切点→提取→分发→树压缩→重建提示词，含 LLM 提取）
     │   ├── events.py              ← EventBus: 发布/订阅 + 通配符 + 一次性监听
     │   ├── memory.py              ← AgentMemory: 树存储（单源）+ 三层记忆 + JSONL 持久化
-    │   ├── compactor.py           ← Compactor: LLM 提取摘要/偏好/事实
     │   ├── tracker.py             ← TokenTracker: JSONL 日志 + 聚合统计
     │   ├── prompts.py             ← PromptLoader: /command 模板加载
     │   └── cli_helpers.py         ← handle_tree / handle_fork / handle_back CLI 辅助函数
@@ -57,7 +56,7 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
 
 1. **事件驱动解耦** — EventBus 替代回调链：`turn:start` / `context:high` / `tool:before` / `tool:after`
 2. **树状会话** — 底层 SessionTree，history 是树的实时计算视图；压缩插入 COMPACT 节点而非截断；分叉不丢数据
-3. **存储与压缩分离** — `AgentMemory` 只做纯 I/O + 树操作，`Compactor` 只做 LLM 提取，`CompactionService` 编排两者
+3. **存储与压缩分离** — `AgentMemory` 只做纯 I/O + 树操作，`CompactionService` 包含 LLM 提取 + 分发 + 树压缩 + 提示词重建全部编排
 4. **无列表双写** — `AgentMemory` 以 SessionTree 为唯一数据源，`history` 是 `tree.build_context()` 的实时计算结果
 5. **扁平工具** — 每个工具一个 py 文件，用 `@tool` 装饰器注入 name/description/args_model
 6. **Agent 定义为文件** — 子代理通过 Markdown + YAML frontmatter 配置，无需改代码
@@ -87,7 +86,8 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
      → 扫描 context 增量 → memory.append_message(msg) → 树 + JSONL
   → Agent.shutdown()
      → CompactionService.compact()
-        → Compactor.compact() 提取摘要/偏好/事实
+        → _find_cut_point() token-aware 切点
+        → _extract() LLM 提取摘要/偏好/事实（含迭代压缩上下文）
         → memory 分发: 偏好→user.md, 事实→memory.md, 摘要→summaries/
         → memory.compress_tree() 插入 COMPACT 节点 + 全量持久化 JSONL
         → SystemPrompt.build(data) 重建含压缩摘要的系统提示词
@@ -145,16 +145,15 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
 - tool_call arguments 修复: DeepSeek 流式返回 arguments 是逐字符分片的，Runner 用 `+=` 拼接而非 `=` 覆盖
 - 工具输出: 串行逐块 yield（实时流式），并行静默收集
 
-### Compactor（`agent/core/compactor.py`）
-- 不读写文件，纯 LLM 提取
-- 提取三类信息：`summary`（critical/decision/issue）、`preferences`、`facts`
-- 只处理最近 k 条非系统消息
-- 结果由 CompactionService 分发到 Memory（摘要→summaries/，偏好→user.md，事实→memory.md）
-
 ### CompactionService（`agent/core/compaction.py`）
-- 编排一次完整压缩：Compactor 提取 → Memory 分发 → SessionTree.compact → SystemPrompt.build
+- 单一模块覆盖完整压缩流程，已合并原 Compactor 的 LLM 提取逻辑
 - `should_compact()`: 检查 token 是否超过阈值
-- `compact()` → `(new_system_prompt, compaction_data)`，由 Agent 决定如何使用
+- `compact()`: 编排一次完整压缩
+  1. `_find_cut_point()` — token-aware 切点：从 leaf 往回累积 token 估算，在用户消息边界切割
+  2. `_extract()` — LLM 提取 summary / preferences / facts（支持迭代压缩：后续压缩传入前次摘要作为上下文）
+  3. `_dispatch_to_memory()` — 分发到三层记忆（偏好→user.md，事实→memory.md，摘要→summaries/）
+  4. `memory.compress_tree()` — 插入 COMPACT 节点 + JSONL 持久化
+  5. `prompt.build(data)` — 重建系统提示词
 
 ### TokenTracker（`agent/core/tracker.py`）
 - 按调用的 JSONL 日志（ts/model/input/output/cache_hit/cache_miss）

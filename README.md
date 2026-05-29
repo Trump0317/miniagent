@@ -35,10 +35,9 @@ agent/
 │   ├── runner.py       #   执行引擎（LLM think-act 迭代）
 │   ├── session_tree.py #   树状会话（分叉/导航/压缩节点）
 │   ├── system_prompt.py#   系统提示词构建器（实时查询 memory）
-│   ├── compaction.py   #   压缩编排服务
+│   ├── compaction.py   #   压缩编排服务（含 LLM 提取 + 分发 + 树压缩 + 提示词重建）
 │   ├── events.py       #   事件总线（发布/订阅，组件解耦）
 │   ├── memory.py       #   纯存储层（树为唯一数据源 + 三层记忆）
-│   ├── compactor.py    #   压缩器（LLM 提取，不操作文件）
 │   ├── tracker.py      #   Token 消耗统计
 │   ├── prompts.py      #   Prompt 模板加载器
 │   └── cli_helpers.py  #   CLI 辅助（handle_tree/fork/back）

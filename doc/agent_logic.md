@@ -18,10 +18,9 @@ agent/
 │   ├── runner.py       #   AgentRunner: think-act 循环
 │   ├── session_tree.py #   SessionTree: 树状会话（分叉/导航/压缩）
 │   ├── system_prompt.py#   SystemPrompt: 系统提示词构建（实时查询 memory）
-│   ├── compaction.py   #   CompactionService: 压缩编排
+│   ├── compaction.py   #   CompactionService: 压缩编排（含 LLM 提取 + 分发 + 树压缩 + 重建提示词）
 │   ├── events.py       #   EventBus: 发布/订阅事件总线
 │   ├── memory.py       #   AgentMemory: 纯存储层（树为唯一数据源 + 三层记忆）
-│   ├── compactor.py    #   Compactor: LLM 提取摘要/偏好/事实
 │   ├── tracker.py      #   TokenTracker: Token 消耗统计
 │   ├── prompts.py      #   PromptLoader: 命令模板加载
 │   └── cli_helpers.py  #   handle_tree/fork/back
@@ -45,7 +44,7 @@ agent/
 1. **树状会话** — SessionTree 管理对话分支，分叉不丢数据，压缩插入 COMPACT 节点
 2. **无列表双写** — AgentMemory 以 SessionTree 为唯一数据源，history 是 tree.build_context() 的实时计算
 3. **事件驱动** — EventBus 解耦各组件，通过 turn:start / context:high / tool:before / tool:after 等事件通信
-4. **存储与压缩分离** — AgentMemory 只做纯 I/O + 树操作，Compactor 只做 LLM 提取，CompactionService 编排两者
+4. **存储与压缩分离** — AgentMemory 只做纯 I/O + 树操作，CompactionService 编排全部压缩流程（含 LLM 提取）
 5. **扁平工具** — 每个工具一个 .py 文件
 
 ---
@@ -108,10 +107,9 @@ Agent.__init__
 ├── AppConfig          — 配置
 ├── EventBus           — 事件总线
 ├── AgentMemory        — 纯存储（树 + 三层记忆）
-├── Compactor          — 压缩器（LLM 提取）
 ├── TokenTracker       — Token 统计
 ├── SystemPrompt       — 系统提示词构建器
-├── CompactionService  — 压缩编排服务
+├── CompactionService  — 压缩编排（含 LLM 提取）
 ├── SkillsLoader       — 技能加载
 ├── AgentLoader        — 子代理定义加载
 ├── PromptLoader       — 命令模板加载
@@ -126,10 +124,12 @@ Agent.__init__
 
 **SystemPrompt** (`system_prompt.py`): 持有静态上下文引用，`build(compaction_data=None)` 实时查询 memory 的动态部分（brief_context、user_preferences），保证每次调用反映最新状态。
 
-**CompactionService** (`compaction.py`): 编排完整压缩流程：
+**CompactionService** (`compaction.py`): 编排完整压缩流程（已合并原 Compactor 的 LLM 提取逻辑）：
 ```
 compact()
-├── compactor.compact(history)          → 提取 summary / preferences / facts
+├── _find_cut_point()                  → token-aware 切点（沿用户消息边界累积估算）
+├── _extract(history)                  → LLM 提取 summary / preferences / facts
+│   └── _get_previous_summary()        → 迭代压缩：传入前次压缩摘要作为上下文
 ├── memory.append_summary(...)          → 写入 summaries/*.md
 ├── memory.add_user(p)                  → 写入 user.md（内置去重）
 ├── memory.add_memory(f)                → 写入 memory.md（内置去重）
@@ -153,8 +153,8 @@ Agent.process(message)
 
 | 事件 | 触发时机 | 处理 |
 |------|----------|------|
-| `context:high` | 上下文达到阈值 | 执行 CompactionService.compact() |
-| `turn:start` | 每轮 LLM 调用前 | 检查 should_compact()，必要时 emit context:high |
+| `turn:start` | 每轮 LLM 调用前 | 检查 should_compact()，达到阈值则 emit context:high + compact() |
+| `context:high` | 压缩触发（扩展钩子） | 外部监听，可在压缩前后执行自定义逻辑 |
 
 ### 2.4 SessionTree (`agent/core/session_tree.py`)
 
@@ -203,20 +203,7 @@ for turn in range(max_turns):
     7. 循环
 ```
 
-### 2.7 Compactor (`agent/core/compactor.py`)
-
-利用 LLM 从对话历史中提取关键信息。**不操作文件**，只返回结构化结果。
-
-```python
-result = compactor.compact(history)
-# {
-#   "summary": {"critical": "关键事件", "decision": "决策", "issue": "问题"},
-#   "preferences": ["用户偏好1"],
-#   "facts": ["核心事实1"]
-# }
-```
-
-### 2.8 TokenTracker (`agent/core/tracker.py`)
+### 2.7 TokenTracker (`agent/core/tracker.py`)
 
 Token 消耗统计，目录延迟创建（首次 record() 时）。支持 `should_compact()` / `stats_by_model()` / `stats_by_date()`。
 
@@ -295,7 +282,8 @@ class MyTool(Tool):
 
 Agent.shutdown()
    └── CompactionService.compact()
-        ├── Compactor.compact() → 提取
+        ├── _find_cut_point() → token-aware 切点
+        ├── _extract() → LLM 提取（含迭代压缩上下文）
         ├── Memory 分发（三层记忆）
         ├── memory.compress_tree() → COMPACT + JSONL
         └── SystemPrompt.build(data) → 重建提示词
