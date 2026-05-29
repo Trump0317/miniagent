@@ -102,8 +102,13 @@ def handle_fork(agent: Agent, command: str) -> None:
         return
 
     if not arg:
-        idx = len(all_entries) - 1 if len(all_entries) >= 2 else 0
-        target = all_entries[-2] if len(all_entries) >= 2 else all_entries[-1]
+        # 默认：倒数第 2 条用户消息
+        if len(all_entries) >= 2:
+            target = all_entries[-2]
+            display_num = len(all_entries) - 1  # 1-based: 倒数第 2 条
+        else:
+            target = all_entries[-1]
+            display_num = len(all_entries)
     else:
         try:
             n = int(arg)
@@ -113,8 +118,8 @@ def handle_fork(agent: Agent, command: str) -> None:
         if n < 1 or n > len(all_entries):
             print(f"[fork] 序号超出范围: 1-{len(all_entries)}")
             return
-        idx = n - 1
-        target = all_entries[idx]
+        target = all_entries[n - 1]
+        display_num = n
 
     # fork 到目标用户消息的 parent（即该消息之前），
     # 这样新分支不携带被 fork 的用户消息内容。
@@ -126,4 +131,4 @@ def handle_fork(agent: Agent, command: str) -> None:
     agent.memory.fork(fork_point)
     agent._system_prompt = agent._prompt.build()
     content = (target.content or "")[:60].replace("\n", " ")
-    print(f"[fork] 已分叉到第 {idx} 条消息之前: {content}")
+    print(f"[fork] 已分叉到第 {display_num} 条消息之前: {content}")
