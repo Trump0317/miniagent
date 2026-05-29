@@ -81,11 +81,13 @@ class EventBus:
         for h in once_list:
             results.append(h(event))
 
-        # 通配符匹配
+        # 通配符匹配（跳过 i=0，避免生成 ":*" 空模式）
         parts = event_name.split(":")
-        for i in range(len(parts)):
+        for i in range(1, len(parts) + 1):
             pattern = ":".join(parts[:i]) + ":*"
             for h in self._handlers.get(pattern, []):
+                results.append(h(event))
+            for h in self._once_handlers.pop(pattern, []):
                 results.append(h(event))
 
         return results
