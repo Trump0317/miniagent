@@ -44,7 +44,7 @@ class TokenTracker:
     def last_input_tokens(self) -> int:
         return self._last_input_tokens
 
-    def should_compact(self, max_context: int, threshold: float = 0.7) -> bool:
+    def should_compact(self, max_context: int, threshold: float = 0.35) -> bool:
         return self._last_input_tokens > max_context * threshold
 
     def _iter_rows(self):
