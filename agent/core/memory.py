@@ -274,6 +274,9 @@ class AgentMemory:
             entry_type = row.get("type", "message")
             role = row.get("role", "")
 
+            if role == "system" and entry_type == "message":
+                continue  # system 消息不存入树（与 append_message 一致），但 compaction 保留
+
             entry = SessionEntry(
                 id=entry_id,
                 parent_id=parent_id,
