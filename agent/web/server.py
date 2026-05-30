@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from agent import Agent, AppConfig
@@ -32,7 +33,13 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/")
 async def index():
     """返回聊天界面."""
-    return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """空图标，避免 404 日志."""
+    return Response(status_code=204)
 
 
 # ── Agent 管理 ──
