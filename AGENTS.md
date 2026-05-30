@@ -310,16 +310,30 @@ python -m unittest tests.test_events
 
 ## 待办计划
 
-### 1. 优化提示词
+### 1. 优化提示词 ✅
 
-- 审查并优化 SystemPrompt 的系统提示词内容
-- 优化子代理（scout / reviewer）的提示词
-- 优化命令模板（/scout / /review）的展开模板
-- 考虑添加任务分解/规划相关的提示词引导
+- [x] 审查并优化 SystemPrompt 的系统提示词内容 → 外部模板文件
+- [x] 优化子代理（scout / reviewer）的提示词 → 结构化流程+清单
+- [x] 优化命令模板（/scout / /review）的展开模板 → 细化指引
+- [ ] 考虑添加任务分解/规划相关的提示词引导
 
-### 2. 优化 CLI
+### 2. 实现 Web UI
+
+- 提供浏览器端的交互界面，替代/补充 CLI
+- 与 CLI 共用 Agent 核心逻辑（Agent、Runner、Memory 等）
+- 技术选型：FastAPI + WebSocket（流式响应）+ 简单前端
+- 功能：
+  - 多会话管理（新建/切换/删除会话）
+  - 实时流式输出（思考过程 + 正文 + 工具调用）
+  - 会话历史浏览和树状分支可视化
+  - 文件上传和 @引用
+  - 模型/Provider 切换
+
+### 3. 优化 CLI
 
 - 改进交互模式的用户体验（输入提示、历史记录）
 - 优化 print 模式（-p）的输出格式
-- 添加更多内置命令（如 /clear、/edit 等）
+- 添加更多内置命令（如 /clear、/help、/session 等）
 - 考虑添加配置管理命令（查看/切换 provider、model 等）
+- **注意**: CLI 和 Web UI 共用 Agent 核心，优化时注意分层，
+  避免将 UI 逻辑耦合到 core 层
