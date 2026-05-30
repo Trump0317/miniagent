@@ -326,7 +326,7 @@ Agent.shutdown()
 
 ### 覆盖状况
 
-截至 2026-05-29，已覆盖 **9 个模块，共 281 个单元测试**：
+截至 2026-05-30，已覆盖 **20 个模块，共 473 个单元测试**：
 
 | 模块 | 测试文件 | 测试数 |
 |------|----------|--------|
@@ -339,6 +339,17 @@ Agent.shutdown()
 | CompactionService | `test_compaction.py` | 29 |
 | AgentRunner | `test_runner.py` | 16 |
 | Tool 基类 + @tool 装饰器 | `test_tool_base.py` | 28 |
+| ToolRegistry | `test_registry.py` | 24 |
+| FileReadTool | `test_file_read.py` | 7 |
+| FileWriteTool | `test_file_write.py` | 7 |
+| FileEditTool | `test_file_edit.py` | 16 |
+| SkillsLoader + SkillTool | `test_skill.py` | 16 |
+| TodoWriteTool | `test_todo.py` | 30 |
+| BashTool | `test_bash.py` | 20 |
+| ToolExecutor | `test_executor.py` | 19 |
+| WebFetchTool | `test_web_fetch.py` | 7 |
+| WebSearchTool | `test_web_search.py` | 7 |
+| AgentLoader + SubagentTool | `test_subagent.py` | 45 |
 
 ### 运行
 

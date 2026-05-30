@@ -282,7 +282,7 @@ python -m unittest discover tests
 python -m unittest tests.test_events
 ```
 
-### 已覆盖模块（截至 2026-05-29）
+### 已覆盖模块（截至 2026-05-30）
 
 | 模块 | 文件 | 测试数 | 类型 |
 |------|------|--------|------|
@@ -295,4 +295,15 @@ python -m unittest tests.test_events
 | CompactionService | `test_compaction.py` | 29 | 单元 |
 | AgentRunner | `test_runner.py` | 16 | 单元 |
 | Tool 基类 | `test_tool_base.py` | 28 | 单元 |
-| **合计** | | **281** | |
+| ToolRegistry | `test_registry.py` | 24 | 单元 |
+| FileReadTool | `test_file_read.py` | 7 | 单元 |
+| FileWriteTool | `test_file_write.py` | 7 | 单元 |
+| FileEditTool | `test_file_edit.py` | 16 | 单元 |
+| SkillsLoader + SkillTool | `test_skill.py` | 16 | 单元 |
+| TodoWriteTool | `test_todo.py` | 30 | 单元 |
+| BashTool | `test_bash.py` | 20 | 单元 |
+| ToolExecutor | `test_executor.py` | 19 | 单元 |
+| WebFetchTool | `test_web_fetch.py` | 7 | 单元 |
+| WebSearchTool | `test_web_search.py` | 7 | 单元 |
+| AgentLoader + SubagentTool | `test_subagent.py` | 45 | 单元 |
+| **合计** | | **473** | |
