@@ -307,3 +307,19 @@ python -m unittest tests.test_events
 | WebSearchTool | `test_web_search.py` | 7 | 单元 |
 | AgentLoader + SubagentTool | `test_subagent.py` | 45 | 单元 |
 | **合计** | | **473** | |
+
+## 待办计划
+
+### 1. 优化提示词
+
+- 审查并优化 SystemPrompt 的系统提示词内容
+- 优化子代理（scout / reviewer）的提示词
+- 优化命令模板（/scout / /review）的展开模板
+- 考虑添加任务分解/规划相关的提示词引导
+
+### 2. 优化 CLI
+
+- 改进交互模式的用户体验（输入提示、历史记录）
+- 优化 print 模式（-p）的输出格式
+- 添加更多内置命令（如 /clear、/edit 等）
+- 考虑添加配置管理命令（查看/切换 provider、model 等）
