@@ -1,3 +1,8 @@
 openai>=2.0
 pydantic>=2.0
 python-dotenv>=1.0
+
+# Web UI
+fastapi>=0.100
+uvicorn>=0.23
+websockets>=12.0
