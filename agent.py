@@ -13,8 +13,20 @@
 
 from __future__ import annotations
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# ── readline: 命令历史和行编辑 ──
+try:
+    import readline
+    _HISTFILE = Path.home() / ".miniagent" / ".history"
+    _HISTFILE.parent.mkdir(parents=True, exist_ok=True)
+    if _HISTFILE.exists():
+        readline.read_history_file(str(_HISTFILE))
+    readline.set_history_length(1000)
+except ImportError:
+    readline = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -71,15 +83,44 @@ def _output_chunk(chunk: dict) -> None:
     if t in ("text", "tool_status"):
         print(chunk.get("content", ""), end="", flush=True)
 
+def _print_help(agent) -> None:
+    """显示所有可用命令。"""
+    print("\n内置命令:")
+    print("  /help           — 显示此帮助")
+    print("  /clear          — 清屏")
+    print("  /session        — 显示会话信息")
+    print("  /tree           — 显示会话分支树")
+    print("  /fork [n]       — 分叉到第 n 条用户消息之前")
+    print("  /back           — 返回分叉前的位置")
+    cmds = agent.prompt_loader.list_commands()
+    if cmds:
+        print("\n" + cmds)
+    print("\n快捷键: Enter 发送, Ctrl+C/Ctrl+D 退出\n")
+
+def _print_session_info(agent) -> None:
+    """显示当前会话信息。"""
+    cfg = agent.config
+    print(f"\n  会话 ID:   {cfg.session_id}")
+    print(f"  模型:      {cfg.model}")
+    if agent.runner.llm.thinking:
+        print(f"  思考级别:  {agent.runner.llm.thinking}")
+    print(f"  上下文:    {'已加载' if cfg.context_files else '无'}")
+    print(f"  会话目录:  {cfg.session_dir}")
+    stats = agent.tracker.stats_by_model()
+    if stats:
+        total_in = sum(s["input"] for s in stats.values())
+        total_out = sum(s["output"] for s in stats.values())
+        print(f"  Token:     输入 {total_in}, 输出 {total_out}")
+    print()
+
 def _print_startup_info(agent) -> None:
     """启动摘要"""
     cfg = agent.config
-    lines = [f"[miniagent] 模型: {cfg.model}"]
+    print(f"miniagent · {cfg.model}", end="")
     if agent.runner.llm.thinking:
-        lines.append(f"  思考级别: {agent.runner.llm.thinking}")
-    if cfg.context_files:
-        lines.append("  上下文文件: 已加载 (AGENTS.md)")
-    print("\n".join(lines))
+        print(f" · 思考:{agent.runner.llm.thinking}", end="")
+    print(f" · 会话:{cfg.session_id}")
+    print("输入 /help 查看命令\n")
 
 
 def _run_print_mode(agent, msg: str) -> None:
@@ -93,11 +134,6 @@ def _run_print_mode(agent, msg: str) -> None:
 
 def _run_interactive(agent, initial_message: str = "") -> None:
     """交互式主循环。"""
-    # 展示可用命令
-    cmds = agent.prompt_loader.list_commands()
-    extra_cmds = "  /fork [n]  — 分叉到第 n 条用户消息\n  /back      — 返回分叉前的位置\n  /tree      — 显示会话分支树"
-    print((cmds + "\n" + extra_cmds) if cmds else extra_cmds)
-
     # 初始消息
     if initial_message:
         msg = _expand_command(agent.prompt_loader, initial_message)
@@ -119,6 +155,15 @@ def _run_interactive(agent, initial_message: str = "") -> None:
             break
 
         # ── 内置命令（不经过 LLM）──
+        if command in ("/help", "/?"):
+            _print_help(agent)
+            continue
+        if command == "/clear":
+            os.system("clear" if os.name == "posix" else "cls")
+            continue
+        if command == "/session":
+            _print_session_info(agent)
+            continue
         if command.startswith("/tree"):
             from agent.core.cli_helpers import handle_tree
             handle_tree(agent)
@@ -154,6 +199,9 @@ def _shutdown(agent) -> None:
     compact = result["compact"]
     if compact.get("summary") or compact.get("preferences"):
         print("[Memory] 已自动压缩并保存本次会话记录")
+    # 保存命令历史
+    if readline:
+        readline.write_history_file(str(_HISTFILE))
     print("退出对话")
 
 
