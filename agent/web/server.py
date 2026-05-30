@@ -1,4 +1,4 @@
-"""miniagent Web UI — FastAPI + WebSocket 流式对话。
+"""miniagent Web UI — FastAPI + WebSocket 流式对话，支持多会话。
 
 启动:
     python -m agent.web.server
@@ -13,13 +13,13 @@ import logging
 import queue
 import threading
 from pathlib import Path
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from agent import Agent, AppConfig
-from agent.ai.context import load_context_files
+from agent.web.session import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="miniagent")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ── 会话管理器 ──
+
+sessions = SessionManager()
 
 
 @app.get("/")
@@ -38,24 +42,23 @@ async def index():
 
 @app.get("/favicon.ico")
 async def favicon():
-    """空图标，避免 404 日志."""
     return Response(status_code=204)
 
 
-# ── Agent 管理 ──
-
-_agent_lock = threading.Lock()
-_agent: Agent | None = None
+# ── REST API: 会话管理 ──
 
 
-def _get_or_create_agent() -> Agent:
-    """懒加载 Agent 单例（WebSocket 连接复用）。"""
-    global _agent
-    with _agent_lock:
-        if _agent is None:
-            ctx = load_context_files(user_dir=Path.home() / ".miniagent")
-            _agent = Agent(AppConfig.from_env(context_files=ctx))
-        return _agent
+@app.get("/api/sessions")
+async def list_sessions():
+    """列出所有会话."""
+    return sessions.list_sessions()
+
+
+@app.post("/api/sessions")
+async def create_session():
+    """创建新会话."""
+    info = sessions.create()
+    return {"id": info.id, "created": info.created.isoformat()}
 
 
 # ── WebSocket 端点 ──
@@ -64,18 +67,17 @@ def _get_or_create_agent() -> Agent:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
-    agent = _get_or_create_agent()
 
-    # 队列桥接：同步 Agent.process() → 异步 WS
+    # 队列：agent.process() chunk → WS 推送
     chunk_queue: queue.Queue[str | None] = queue.Queue()
 
-    def _run_agent(message: str):
-        """在线程中运行 agent.process()，chunk 写入队列."""
+    def _run_agent(agent, message: str):
+        """在线程中运行 agent.process()."""
         try:
             for chunk in agent.process(message):
                 chunk_queue.put(chunk)
-            chunk_queue.put(None)  # 结束信号
-        except Exception as e:
+            chunk_queue.put(None)
+        except Exception:
             chunk_queue.put(None)
             logger.exception("agent.process 异常")
 
@@ -87,14 +89,32 @@ async def ws_endpoint(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            msg_type = data.get("type")
-            content = data.get("content", "")
+            msg_type = data.get("type", "")
 
-            if msg_type == "message" and content:
-                t = threading.Thread(target=_run_agent, args=(content,), daemon=True)
+            if msg_type == "switch":
+                # 前端请求切换到指定会话
+                sid = data.get("session_id", "")
+                if sid:
+                    agent = sessions.get_or_create_agent(sid)
+                    await ws.send_json({
+                        "type": "switched",
+                        "session_id": sid,
+                        "model": agent.config.model,
+                    })
+
+            elif msg_type == "message":
+                sid = data.get("session_id", "default")
+                content = data.get("content", "")
+                if not content:
+                    continue
+
+                agent = sessions.get_or_create_agent(sid)
+
+                t = threading.Thread(
+                    target=_run_agent, args=(agent, content), daemon=True,
+                )
                 t.start()
 
-                # 从队列流式推送 chunk
                 while True:
                     chunk = await asyncio.to_thread(chunk_queue.get)
                     if chunk is None:
