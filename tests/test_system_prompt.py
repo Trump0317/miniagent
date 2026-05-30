@@ -36,10 +36,10 @@ class TestSystemPrompt(unittest.TestCase):
     def test_basic_structure(self):
         """基本提示词包含所有必要段落."""
         result = self._build_prompt("test context")
-        self.assertIn("智能助手", result)
+        self.assertIn("智能编程助手", result)
         self.assertIn("项目上下文", result)
         self.assertIn("test context", result)
-        self.assertIn("可用技能列表", result)
+        self.assertIn("可用技能", result)
         self.assertIn("可用子代理", result)
         self.assertIn("可用命令", result)
         self.assertIn("长期记忆", result)
