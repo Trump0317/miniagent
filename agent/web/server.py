@@ -82,6 +82,19 @@ async def session_tree(session_id: str):
     return {"nodes": nodes, "leaf_id": agent.memory.leaf_id}
 
 
+@app.get("/api/sessions/{session_id}/history")
+async def session_history(session_id: str):
+    """获取会话对话历史（完整消息）."""
+    agent = sessions.get_or_create_agent(session_id)
+    # memory.history 返回 LLM 格式的消息列表
+    messages = agent.memory.history
+    return [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages
+        if m.get("role") in ("user", "assistant")
+    ]
+
+
 @app.post("/api/sessions/{session_id}/fork")
 async def session_fork(session_id: str, target_id: str = ""):
     """分叉到指定父节点."""
