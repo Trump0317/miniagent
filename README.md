@@ -2,6 +2,8 @@
 
 一个基于 LLM 的智能助手框架，采用 ReAct 模式 + 事件驱动架构，支持工具调用、多 Provider 切换、子代理、会话分叉、上下文压缩、三层记忆等功能。
 
+提供 CLI 和 Web UI 两种交互方式。
+
 ## 快速开始
 
 ```bash
@@ -15,7 +17,9 @@ cp .env.example .env
 # 编辑 .env，填入 API Key（支持 DeepSeek / OpenAI / 自定义）
 
 # 3. 启动（新会话）
-./run.sh
+./run.sh                               # CLI 交互模式
+./run.sh -p "你好"                     # CLI 单次模式
+python -m agent.web.server             # Web UI 模式 → http://127.0.0.1:8000
 
 # 恢复最近会话
 ./run.sh -r
@@ -26,15 +30,16 @@ cp .env.example .env
 ```
 agent/
 ├── __init__.py         # 公共导出（Agent, EventBus, AppConfig, LLMClient）
+├── system_prompt.md    # 系统提示词模板（外部文件，可独立修改）
 ├── ai/                 # AI 层（Provider 配置 + LLM 调用 + 上下文加载）
 │   ├── config.py       #   多 Provider 配置 + 会话隔离
 │   ├── llm.py          #   LLM 客户端封装
 │   └── context.py      #   项目上下文文件加载
 ├── core/               # 核心引擎（Agent 装配 + 运行器 + 存储）
 │   ├── agent.py        #   Agent 核心（纯装配层，~130 行）
-│   ├── runner.py       #   执行引擎（LLM think-act 迭代）
+│   ├── runner.py       #   执行引擎（LLM think-act 迭代，产出统一 chunk 格式）
 │   ├── session_tree.py #   树状会话（分叉/导航/压缩节点）
-│   ├── system_prompt.py#   系统提示词构建器（实时查询 memory）
+│   ├── system_prompt.py#   系统提示词构建器（从文件加载模板 + 动态注入）
 │   ├── compaction.py   #   压缩编排服务（含 LLM 提取 + 分发 + 树压缩 + 提示词重建）
 │   ├── events.py       #   事件总线（发布/订阅，组件解耦）
 │   ├── memory.py       #   纯存储层（树为唯一数据源 + 三层记忆）
@@ -44,7 +49,7 @@ agent/
 ├── tools/              # 工具集（扁平布局，每个工具一个文件）
 │   ├── base.py         #   工具基类 + Schema 瘦身（保留 anyOf+default）
 │   ├── registry.py     #   工具注册表
-│   ├── executor.py     #   工具执行器（串行/并行调度）
+│   ├── executor.py     #   工具执行器（串行/并行调度，产出统一 chunk）
 │   ├── bash.py         #   终端命令（安全护栏 + 空输出确认）
 │   ├── file_read.py    #   文件读取
 │   ├── file_write.py   #   文件写入
@@ -57,9 +62,14 @@ agent/
 ├── subagent/           # 子代理定义文件（Markdown + YAML）
 │   ├── scout.md        #   代码侦查员
 │   └── reviewer.md     #   代码审查员
-└── prompts/            # Prompt 模板文件
-    ├── scout.md        #   /scout 命令
-    └── review.md       #   /review 命令
+├── prompts/            # Prompt 模板文件
+│   ├── scout.md        #   /scout 命令
+│   └── review.md       #   /review 命令
+├── web/                # Web UI（FastAPI + WebSocket）
+│   ├── server.py       #   FastAPI 服务 + REST + WS 端点
+│   ├── session.py      #   多会话管理
+│   └── static/
+│       └── index.html  #   聊天界面（Markdown 渲染、分支树）
 └── tests/              # 单元测试（473 个，覆盖核心和工具层）
     ├── test_events.py
     ├── test_session_tree.py
@@ -88,6 +98,7 @@ agent/
 - **无列表双写** — `AgentMemory` 以树为唯一数据源，`history` 是 `tree.build_context()` 的实时计算
 - **事件驱动** — EventBus 解耦各组件
 - **扁平工具** — 每个工具一个 py 文件
+- **统一 chunk** — Agent 产出 `{"type":"text/tool_status/done"}` 格式，CLI/Web 共用
 
 ## 功能清单
 
@@ -97,6 +108,12 @@ agent/
 | | 流式输出 | LLM 文本逐 token 显示 |
 | | 思维链 | 支持 DeepSeek R1 reasoning_content |
 | | 事件驱动 | EventBus 发布/订阅，组件完全解耦 |
+| **CLI** | 命令历史 | readline，↑↓回溯，退出持久化 |
+| | 内置命令 | /help /session /clear /tree /fork /back |
+| **Web** | 流式对话 | FastAPI + WebSocket，实时推送 |
+| | 多会话 | 新建/切换/删除，历史从后端加载 |
+| | 分支树 | 可视化 + fork/back 操作 |
+| | 界面 | Markdown 渲染、毛玻璃风格、代码复制 |
 | **工具** | Bash | 终端命令，安全护栏拦截危险操作，空输出确认 |
 | | 文件读写 | read / write / edit（模糊匹配） |
 | | 网络 | fetch / search |
@@ -119,32 +136,34 @@ agent/
 | | 动态提示词 | 压缩后 SystemPrompt.build(data) 注入压缩摘要 |
 | | 三层记忆 | 短期对话 / 每日摘要 / 长期记忆（memory.md） |
 | | 记忆去重 | 偏好和事实自动去重 |
-| **扩展** | 事件钩子 | context:high / turn:start / tool:before / tool:after |
-| | Agent 定义 | Markdown + YAML 文件配置子代理 |
+| **扩展** | 提示词模板 | 外部 .md 文件，`{placeholder}` 动态替换 |
+| | 子代理定义 | Markdown + YAML 文件配置子代理 |
 | | Prompt 模板 | `/scout`, `/review` 等快捷命令 |
 | | Token 统计 | 按模型/日期聚合统计 |
 
 ## 使用示例
 
-### 基本对话
+### CLI 基本对话
 ```
 [You]: 你好
 [Assistant]: 你好！有什么可以帮你的？😊
 ```
 
-### 工具调用
+### CLI 内置命令
 ```
-[You]: 列出当前目录的文件
-[Assistant]: [执行工具: bash_tool...]
-LICENSE  README.md  agent/  agent.py  ...
+[You]: /help           # 显示所有命令
+[You]: /session        # 显示会话信息（ID/模型/Token）
+[You]: /clear          # 清屏
+[You]: /tree           # 查看分支树
+[You]: /fork 2         # 分叉到第 2 条用户消息之前
+[You]: /back           # 返回分叉前
 ```
 
-### 会话管理
+### Web UI
 ```
-[You]: /fork           # 分叉到上一次用户消息之前
-[You]: /fork 3         # 分叉到第 3 条用户消息之前
-[You]: /back           # 返回分叉前的位置
-[You]: /tree           # 查看分支树
+python -m agent.web.server
+# 打开 http://127.0.0.1:8000
+# 支持多会话、分支树、Markdown 渲染
 ```
 
 ### 子代理

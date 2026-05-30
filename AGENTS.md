@@ -317,23 +317,24 @@ python -m unittest tests.test_events
 - [x] 优化命令模板（/scout / /review）的展开模板 → 细化指引
 - [ ] 考虑添加任务分解/规划相关的提示词引导
 
-### 2. 实现 Web UI
+### 2. 实现 Web UI ✅（explore 分支）
 
-- 提供浏览器端的交互界面，替代/补充 CLI
-- 与 CLI 共用 Agent 核心逻辑（Agent、Runner、Memory 等）
-- 技术选型：FastAPI + WebSocket（流式响应）+ 简单前端
-- 功能：
-  - 多会话管理（新建/切换/删除会话）
-  - 实时流式输出（思考过程 + 正文 + 工具调用）
-  - 会话历史浏览和树状分支可视化
-  - 文件上传和 @引用
-  - 模型/Provider 切换
+- [x] FastAPI + WebSocket 流式对话
+- [x] Agent 核心统一 chunk 格式（text/tool_status/done），CLI/Web 共用
+- [x] 多会话管理（新建/切换/删除）
+- [x] 实时流式输出，按类型渲染（正文/工具状态/工具输出可折叠）
+- [x] 会话历史从后端 API 加载，刷新不丢失
+- [x] 分支树可视化 + fork/back 操作
+- [x] Markdown 渲染（marked.js）：代码块、列表、表格
+- [x] 界面设计：Inter 字体、毛玻璃风格、动画、代码复制按钮
+- [ ] 文件上传和 @引用
+- [ ] 模型/Provider 切换
 
-### 3. 优化 CLI
+### 3. 优化 CLI ✅（explore 分支）
 
-- 改进交互模式的用户体验（输入提示、历史记录）
-- 优化 print 模式（-p）的输出格式
-- 添加更多内置命令（如 /clear、/help、/session 等）
-- 考虑添加配置管理命令（查看/切换 provider、model 等）
-- **注意**: CLI 和 Web UI 共用 Agent 核心，优化时注意分层，
-  避免将 UI 逻辑耦合到 core 层
+- [x] readline 命令历史（↑↓回溯，退出持久化到 ~/.miniagent/.history）
+- [x] /help 命令（列出所有内置命令 + 模板命令）
+- [x] /session 命令（会话 ID/模型/Token 用量/存储路径）
+- [x] /clear 清屏命令
+- [x] 启动信息精简为一行
+- [ ] 考虑添加配置管理命令（查看/切换 provider、model 等）
