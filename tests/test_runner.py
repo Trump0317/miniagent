@@ -8,6 +8,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent.core.runner import AgentRunner
 
 
+def _chunks_text(chunks: list[dict]) -> str:
+    """从 chunk 列表中提取串联的文本内容."""
+    return "".join(
+        c["content"] for c in chunks
+        if c.get("type") in ("text", "tool_status")
+    )
+
+
 class TestAgentRunner(unittest.TestCase):
     """AgentRunner think-act 循环测试."""
 
@@ -44,7 +52,8 @@ class TestAgentRunner(unittest.TestCase):
         history = [{"role": "user", "content": "hi"}]
 
         output = list(runner.step(history))
-        self.assertEqual(output, ["Hello ", "World"])
+        self.assertEqual(_chunks_text(output), "Hello World")
+        self.assertEqual(output[-1]["type"], "done")
 
         # 验证 assistant 消息被追加
         self.assertEqual(len(history), 2)
@@ -63,20 +72,16 @@ class TestAgentRunner(unittest.TestCase):
     # ── reasoning ──
 
     def test_reasoning_content(self):
-        """reasoning 被累积但不出现在输出中."""
+        """reasoning 不出现在 text chunk 中但写入 assistant 消息."""
         self._make_stream_chunks(
             {"type": "reasoning", "text": "thinking..."},
             {"type": "content", "text": "answer"},
         )
         runner = self._make_runner()
-        history = [{"role": "user",  "content": "hi"}]
+        history = [{"role": "user", "content": "hi"}]
 
         output = list(runner.step(history))
-        # reasoning 不出现在 yield 中
-        self.assertNotIn("thinking...", output)
-        self.assertEqual(output, ["answer"])
-
-        # 但 reasoning 被写入 assistant 消息
+        self.assertEqual(_chunks_text(output), "answer")
         self.assertEqual(history[1]["reasoning_content"], "thinking...")
 
     # ── 工具调用 ──
@@ -84,7 +89,7 @@ class TestAgentRunner(unittest.TestCase):
     def test_single_tool_call(self):
         """单个工具调用流程."""
         self.tools.execute.return_value = iter([
-            {"id": "call_1", "result": "tool output"},
+            {"type": "tool_result", "id": "call_1", "result": "tool output"},
         ])
         self._make_stream_chunks(
             {"type": "tool_call", "index": 0, "id": "call_1", "name": "bash",
@@ -109,10 +114,9 @@ class TestAgentRunner(unittest.TestCase):
     def test_multiple_tool_calls(self):
         """多个工具调用 — 两次 tool_call 产生两条 tool 消息."""
         self.tools.execute.return_value = iter([
-            {"id": "call_1", "result": "output1"},
-            {"id": "call_2", "result": "output2"},
+            {"type": "tool_result", "id": "call_1", "result": "output1"},
+            {"type": "tool_result", "id": "call_2", "result": "output2"},
         ])
-        # 第一次 stream 返回 2 个 tool_call；第二次返回空内容（结束）
         self.llm.stream.side_effect = [
             iter([
                 {"type": "tool_call", "index": 0, "id": "call_1", "name": "bash",
@@ -126,9 +130,7 @@ class TestAgentRunner(unittest.TestCase):
         history = [{"role": "user", "content": "do multiple"}]
 
         list(runner.step(history))
-        # 两个 tool_calls
         self.assertEqual(len(history[1]["tool_calls"]), 2)
-        # 两条 tool 消息
         tool_msgs = [m for m in history if m["role"] == "tool"]
         self.assertEqual(len(tool_msgs), 2)
         self.assertEqual(tool_msgs[0]["tool_call_id"], "call_1")
@@ -137,7 +139,7 @@ class TestAgentRunner(unittest.TestCase):
     def test_tool_call_arguments_concatenation(self):
         """DeepSeek 分片：arguments 逐 chunk 拼接而非覆盖."""
         self.tools.execute.return_value = iter([
-            {"id": "call_1", "result": "ok"},
+            {"type": "tool_result", "id": "call_1", "result": "ok"},
         ])
         self._make_stream_chunks(
             {"type": "tool_call", "index": 0, "id": "call_1", "name": "bash",
@@ -154,7 +156,7 @@ class TestAgentRunner(unittest.TestCase):
     def test_tool_call_with_content(self):
         """tool_call 和 content 同时存在."""
         self.tools.execute.return_value = iter([
-            {"id": "call_1", "result": "ok"},
+            {"type": "tool_result", "id": "call_1", "result": "ok"},
         ])
         self._make_stream_chunks(
             {"type": "content", "text": "Let me check..."},
@@ -165,7 +167,7 @@ class TestAgentRunner(unittest.TestCase):
         history = [{"role": "user", "content": "hi"}]
 
         output = list(runner.step(history))
-        self.assertIn("Let me check...", output)
+        self.assertIn("Let me check...", _chunks_text(output))
         self.assertEqual(history[1]["content"], "Let me check...")
         self.assertIn("tool_calls", history[1])
 
@@ -174,9 +176,9 @@ class TestAgentRunner(unittest.TestCase):
     def test_max_turns_limit(self):
         """达到最大轮数时熔断."""
         self.tools.execute.side_effect = [
-            iter([{"id": "c1", "result": "ok"}]),
-            iter([{"id": "c2", "result": "ok"}]),
-            iter([{"id": "c3", "result": "ok"}]),
+            iter([{"type": "tool_result", "id": "c1", "result": "ok"}]),
+            iter([{"type": "tool_result", "id": "c2", "result": "ok"}]),
+            iter([{"type": "tool_result", "id": "c3", "result": "ok"}]),
         ]
         self.llm.stream.side_effect = [
             iter([{"type": "tool_call", "index": 0, "id": "c1", "name": "bash",
@@ -190,18 +192,17 @@ class TestAgentRunner(unittest.TestCase):
         history = [{"role": "user", "content": "go"}]
 
         output = list(runner.step(history))
-        output_text = "".join(str(o) for o in output)
+        output_text = _chunks_text(output)
         self.assertIn("达到最大轮数", output_text)
         self.assertIn("2", output_text)
 
     def test_no_max_turns(self):
         """max_turns=None 时不设上限."""
-        # 需要有限循环才能测试 — 让 LLM 返回文本结束
         self._make_stream_chunks({"type": "content", "text": "done"})
         runner = self._make_runner(max_turns=None)
         history = [{"role": "user", "content": "hi"}]
         output = list(runner.step(history))
-        self.assertEqual(output, ["done"])
+        self.assertEqual(_chunks_text(output), "done")
 
     # ── event_bus ──
 
@@ -224,7 +225,7 @@ class TestAgentRunner(unittest.TestCase):
     # ── token tracking ──
 
     def test_token_usage_recorded(self):
-        """usage chunk 被记录到 tracker，参数正确传递."""
+        """usage chunk 被记录到 tracker."""
         self.llm.model = "test-model"
         self._make_stream_chunks(
             {"type": "usage", "input": 100, "output": 50,
@@ -259,7 +260,7 @@ class TestAgentRunner(unittest.TestCase):
     def test_empty_content_with_tool_calls(self):
         """只有 tool_calls 没有文本内容时 content 为 None."""
         self.tools.execute.return_value = iter([
-            {"id": "call_1", "result": "ok"},
+            {"type": "tool_result", "id": "call_1", "result": "ok"},
         ])
         self._make_stream_chunks(
             {"type": "tool_call", "index": 0, "id": "call_1", "name": "bash",
@@ -272,7 +273,7 @@ class TestAgentRunner(unittest.TestCase):
         self.assertIsNone(history[1]["content"])
 
     def test_empty_content_no_tool_calls_fallback(self):
-        """无文本也无 tool_calls 时用 reasoning 或空字符串回退."""
+        """无文本也无 tool_calls 时用 reasoning 回退."""
         self._make_stream_chunks(
             {"type": "reasoning", "text": "hmm..."},
         )
@@ -283,8 +284,11 @@ class TestAgentRunner(unittest.TestCase):
         self.assertEqual(history[1]["content"], "hmm...")
 
     def test_tool_result_as_string_yielded(self):
-        """工具执行返回纯字符串时直接 yield."""
-        self.tools.execute.return_value = iter(["streaming output"])
+        """工具执行产出 text/tool_status chunk."""
+        self.tools.execute.return_value = iter([
+            {"type": "text", "content": "streaming output"},
+            {"type": "tool_result", "id": "call_1", "result": "ok"},
+        ])
         self._make_stream_chunks(
             {"type": "tool_call", "index": 0, "id": "call_1", "name": "bash",
              "arguments": "{}"},
@@ -293,7 +297,7 @@ class TestAgentRunner(unittest.TestCase):
         history = [{"role": "user", "content": "hi"}]
 
         output = list(runner.step(history))
-        self.assertIn("streaming output", output)
+        self.assertIn("streaming output", _chunks_text(output))
 
 
 if __name__ == "__main__":

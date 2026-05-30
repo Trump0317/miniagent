@@ -65,6 +65,12 @@ def _expand_command(prompt_loader, user_input: str) -> str:
 # Harness 模式
 # ═══════════════════════════════════════════════════════════════
 
+def _output_chunk(chunk: dict) -> None:
+    """将结构化 chunk 输出到终端。"""
+    t = chunk.get("type", "")
+    if t in ("text", "tool_status"):
+        print(chunk.get("content", ""), end="", flush=True)
+
 def _print_startup_info(agent) -> None:
     """启动摘要"""
     cfg = agent.config
@@ -80,7 +86,7 @@ def _run_print_mode(agent, msg: str) -> None:
     """非交互模式：处理一条消息，输出结果后退出。"""
     msg = _expand_command(agent.prompt_loader, msg)
     for chunk in agent.process(msg):
-        print(chunk, end="", flush=True)
+        _output_chunk(chunk)
     print()
     _shutdown(agent)
 
@@ -98,7 +104,7 @@ def _run_interactive(agent, initial_message: str = "") -> None:
         print(f"[You] : {initial_message}")
         print("[Assistant] : ", end="", flush=True)
         for chunk in agent.process(msg):
-            print(chunk, end="", flush=True)
+            _output_chunk(chunk)
         print("\n")
 
     while True:
@@ -130,7 +136,7 @@ def _run_interactive(agent, initial_message: str = "") -> None:
 
         print("[Assistant] : ", end="", flush=True)
         for chunk in agent.process(msg):
-            print(chunk, end="", flush=True)
+            _output_chunk(chunk)
         print("\n")
 
     _shutdown(agent)

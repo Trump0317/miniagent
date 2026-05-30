@@ -164,6 +164,9 @@ function send() {
     if (data.type === 'text') {
       assistantDiv.textContent += data.content;
       msgBox.scrollTop = msgBox.scrollHeight;
+    } else if (data.type === 'tool_status') {
+      assistantDiv.textContent += data.content;
+      msgBox.scrollTop = msgBox.scrollHeight;
     } else if (data.type === 'done') {
       busy = false;
       sendBtn.disabled = false;

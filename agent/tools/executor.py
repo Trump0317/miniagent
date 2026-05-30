@@ -1,4 +1,10 @@
-"""工具执行器 —— 串行/并行工具调度，钩子集成，结果截断。"""
+"""工具执行器 —— 串行/并行工具调度，钩子集成，结果截断。
+
+产出统一 chunk 格式:
+    {"type": "text", "content": "..."}      — 工具实时输出
+    {"type": "tool_status", "content": "..."} — 工具执行状态（串行/并行提示）
+    {"type": "tool_result", "id": "...", "result": "..."} — 工具最终结果
+"""
 
 from __future__ import annotations
 import json
@@ -21,7 +27,7 @@ class ToolExecutor:
         self.registry = registry
         self.bus = event_bus
 
-    def execute(self, tool_calls: list[dict]) -> Generator[str | dict, None, None]:
+    def execute(self, tool_calls: list[dict]) -> Generator[dict, None, None]:
         """执行工具调用。产出状态文本和结果字典。
 
         策略：
@@ -49,14 +55,17 @@ class ToolExecutor:
                 if self.registry.get_tool(tc["function"]["name"])
                 and not self.registry.get_tool(tc["function"]["name"]).parallel_safe
             ]
-            yield f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n"
+            yield {
+                "type": "tool_status",
+                "content": f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n",
+            }
             yield from self._serial(tool_calls)
 
     def _serial(self, tool_calls: list[dict]):
         for tc in tool_calls:
             name = tc["function"]["name"]
             args = self._parse_args(tc)
-            yield f"\n[执行工具: {name}...]\n"
+            yield {"type": "tool_status", "content": f"\n[执行工具: {name}...]\n"}
 
             # before 事件
             blocked_result: str | None = None
@@ -68,7 +77,7 @@ class ToolExecutor:
                         break
 
             if blocked_result:
-                yield {"id": tc["id"], "result": self._truncate(blocked_result)}
+                yield {"type": "tool_result", "id": tc["id"], "result": self._truncate(blocked_result)}
                 continue
 
             # 流式执行工具，逐块产出
@@ -76,7 +85,7 @@ class ToolExecutor:
             for chunk in self._run_one(name, args):
                 if chunk:
                     chunks.append(str(chunk))
-                    yield str(chunk)  # ← 实时输出！
+                    yield {"type": "text", "content": str(chunk)}
 
             result = "".join(chunks)
 
@@ -87,12 +96,12 @@ class ToolExecutor:
                     if isinstance(resp, str):
                         result = resp
 
-            yield {"id": tc["id"], "result": self._truncate(result)}
+            yield {"type": "tool_result", "id": tc["id"], "result": self._truncate(result)}
 
     def _parallel(self, tool_calls: list[dict]):
         count = len(tool_calls)
         workers = min(count, MAX_PARALLEL_TOOLS)
-        yield f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"
+        yield {"type": "tool_status", "content": f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"}
 
         results: dict[str, str] = {}
 
@@ -105,8 +114,7 @@ class ToolExecutor:
                 for resp in responses:
                     if isinstance(resp, dict) and resp.get("block"):
                         return tc["id"], name, f"[拦截] {name}: {resp.get('reason', '被事件拦截')}"
-            
-            # 并行模式下静默收集（输出交错会乱）
+
             chunks: list[str] = []
             for chunk in self._run_one(name, args):
                 if chunk:
@@ -126,19 +134,15 @@ class ToolExecutor:
             for future in as_completed(futures):
                 tc_id, name, raw = future.result()
                 results[tc_id] = self._truncate(raw)
-                yield f"[{name}] ✓\n"
+                yield {"type": "tool_status", "content": f"[{name}] ✓\n"}
 
         for tc in tool_calls:
             tc_id = tc["id"]
             if tc_id in results:
-                yield {"id": tc_id, "result": results[tc_id]}
+                yield {"type": "tool_result", "id": tc_id, "result": results[tc_id]}
 
     def _run_one(self, name: str, args: dict):
-        """生成器: 逐块产出工具输出，最后一个值即完整结果。
-
-        串行模式: 调用方逐块 yield 给用户实时看进度
-        并行模式: 调用方静默收集，只取最终字符串
-        """
+        """生成器: 逐块产出工具输出。"""
         tool = self.registry.get_tool(name)
         if not tool:
             yield f"[错误] 未找到工具 '{name}'"

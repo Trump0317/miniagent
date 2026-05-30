@@ -120,7 +120,7 @@ async def ws_endpoint(ws: WebSocket):
                     if chunk is None:
                         await ws.send_json({"type": "done"})
                         break
-                    await ws.send_json({"type": "text", "content": chunk})
+                    await ws.send_json(chunk)
 
     except WebSocketDisconnect:
         logger.info("WebSocket 断开")

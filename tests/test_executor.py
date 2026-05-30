@@ -57,7 +57,7 @@ class FailingTool(Tool):
 
 
 class RequiredArgs(BaseModel):
-    path: str  # 必需，无默认值
+    path: str
 
 
 @tool(name="need_path", description="Needs path", parameters=RequiredArgs)
@@ -73,8 +73,15 @@ class BigOutputTool(Tool):
     parallel_safe = True
 
     def execute(self, value: str = "default") -> str:
-        # 生成超过截断阈值的输出
         return "x" * (MAX_RESULT_BYTES + 100)
+
+
+def _text(chunks: list[dict]) -> str:
+    """提取 text + tool_status 串联文本."""
+    return "".join(
+        c["content"] for c in chunks
+        if c.get("type") in ("text", "tool_status")
+    )
 
 
 class TestToolExecutor(unittest.TestCase):
@@ -99,20 +106,18 @@ class TestToolExecutor(unittest.TestCase):
     def test_single_tool_serial(self):
         """单个工具使用串行执行."""
         results = list(self.executor.execute([self._tc("echo", {"value": "hello"})]))
-        # 包含状态文本 + 最终结果
-        self.assertTrue(any(isinstance(r, dict) for r in results))
-        result_dict = [r for r in results if isinstance(r, dict)][0]
-        self.assertEqual(result_dict["id"], "call_1")
-        self.assertIn("echo: hello", result_dict["result"])
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
+        self.assertEqual(len(result_dicts), 1)
+        self.assertEqual(result_dicts[0]["id"], "call_1")
+        self.assertIn("echo: hello", result_dicts[0]["result"])
 
     def test_single_tool_streaming(self):
         """流式工具逐块产出."""
         results = list(self.executor.execute([self._tc("streamer", {"value": "abc"})]))
-        # 应该包含逐块输出
-        texts = [r for r in results if isinstance(r, str)]
-        self.assertIn("a", texts)
-        self.assertIn("b", texts)
-        self.assertIn("c", texts)
+        text = _text(results)
+        self.assertIn("a", text)
+        self.assertIn("b", text)
+        self.assertIn("c", text)
 
     # ── 多工具并行（全部 safe）──
 
@@ -124,7 +129,7 @@ class TestToolExecutor(unittest.TestCase):
             self._tc("streamer", {"value": "x"}, id="3"),
         ]
         results = list(self.executor.execute(tcs))
-        result_dicts = [r for r in results if isinstance(r, dict)]
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         self.assertEqual(len(result_dicts), 3)
 
     # ── 多工具串行（存在非安全工具）──
@@ -136,18 +141,16 @@ class TestToolExecutor(unittest.TestCase):
             self._tc("unsafe_tool", {"value": "dangerous"}),
         ]
         results = list(self.executor.execute(tcs))
-        # 应该包含串行提示
-        texts = "".join(r for r in results if isinstance(r, str))
-        self.assertIn("串行执行", texts)
+        text = _text(results)
+        self.assertIn("串行执行", text)
 
     # ── 截断 ──
 
     def test_truncate_large_output(self):
         """超大输出被截断并附加截断说明."""
         results = list(self.executor.execute([self._tc("big_output", {"value": "test"})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
-        result_str = result_dicts[0]["result"]
-        self.assertIn("输出已截断", result_str)
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
+        self.assertIn("输出已截断", result_dicts[0]["result"])
 
     def test_truncate_no_truncation_needed(self):
         """短输出原样返回不截断."""
@@ -183,7 +186,7 @@ class TestToolExecutor(unittest.TestCase):
             return {"block": True, "reason": "test block"}
 
         results = list(self.executor.execute([self._tc("echo", {"value": "test"})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         self.assertIn("[拦截]", result_dicts[0]["result"])
         self.assertIn("test block", result_dicts[0]["result"])
 
@@ -196,7 +199,7 @@ class TestToolExecutor(unittest.TestCase):
             return "modified result"
 
         results = list(self.executor.execute([self._tc("echo", {"value": "test"})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         self.assertEqual(result_dicts[0]["result"], "modified result")
 
     def test_parallel_with_tool_before_block(self):
@@ -210,7 +213,7 @@ class TestToolExecutor(unittest.TestCase):
             self._tc("echo", {"value": "b"}, id="2"),
         ]
         results = list(self.executor.execute(tcs))
-        result_dicts = [r for r in results if isinstance(r, dict)]
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         for d in result_dicts:
             self.assertIn("[拦截]", d["result"])
 
@@ -219,20 +222,19 @@ class TestToolExecutor(unittest.TestCase):
     def test_tool_not_found(self):
         """调用未注册工具返回错误提示."""
         results = list(self.executor.execute([self._tc("ghost", {})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
-        self.assertIn("未找到工具", result_dicts[0]["result"])
+        text = _text(results)
+        self.assertIn("未找到工具", text)
 
     def test_tool_param_validation_error(self):
         """缺少必需参数触发校验错误."""
         results = list(self.executor.execute([self._tc("need_path", {})]))
-        texts = "".join(str(r) for r in results)
-        self.assertIn("参数校验错误", texts)
+        text = _text(results)
+        self.assertIn("参数校验错误", text)
 
     def test_tool_runtime_error(self):
-        """工具 execute 抛 ValueError 被 call_tool 捕获为参数校验错误."""
+        """工具 execute 抛 ValueError 被 call_tool 捕获."""
         results = list(self.executor.execute([self._tc("failing", {})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
-        # execute 抛出 ValueError → call_tool 的 ValueError 捕获返回 "参数校验错误"
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         self.assertIn("参数校验错误", result_dicts[0]["result"])
 
 
@@ -245,12 +247,12 @@ class TestToolExecutorWithoutEventBus(unittest.TestCase):
         self.executor = ToolExecutor(self.registry, event_bus=None)
 
     def _tc(self, name: str, args: dict) -> dict:
-        return {"id": "call_1", "function": {"name": name, "arguments": str(args).replace("'", '"')}}
+        return {"id": "call_1", "function": {"name": name, "arguments": json.dumps(args)}}
 
     def test_execute_without_bus(self):
         """没有 EventBus 时正常执行不报错."""
         results = list(self.executor.execute([self._tc("echo", {"value": "test"})]))
-        result_dicts = [r for r in results if isinstance(r, dict)]
+        result_dicts = [r for r in results if r.get("type") == "tool_result"]
         self.assertIn("echo: test", result_dicts[0]["result"])
 
 

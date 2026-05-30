@@ -1,7 +1,10 @@
 """Agent 执行引擎 —— think-act 循环编排。
 
-不持有状态，不关心历史存储细节。
-LLM → LLMClient，工具 → ToolExecutor，事件 → EventBus。
+产出统一 chunk 格式:
+    {"type": "text", "content": "..."}       — LLM 正文 / 工具输出
+    {"type": "tool_status", "content": "..."} — 工具执行状态
+    {"type": "tool_result", "id": ..., "result": ...} — 工具最终结果
+    {"type": "done"}                          — 本轮结束
 """
 
 from __future__ import annotations
@@ -14,13 +17,7 @@ if TYPE_CHECKING:
 
 
 class AgentRunner:
-    """执行 think-act 循环。
-
-    用法:
-        runner = AgentRunner(llm_client, tool_executor, token_tracker, event_bus)
-        for chunk in runner.step(history):
-            print(chunk)
-    """
+    """执行 think-act 循环。"""
 
     def __init__(
         self,
@@ -36,12 +33,16 @@ class AgentRunner:
         self.bus = event_bus
         self.max_turns = max_turns
 
-    def step(self, history: list[dict]) -> Generator[str, None, None]:
-        """执行一轮完整对话。逐块产出文本。"""
+    def step(self, history: list[dict]) -> Generator[dict, None, None]:
+        """执行一轮完整对话。逐块产出结构化消息。"""
         turns = 0
         while True:
             if self.max_turns is not None and turns >= self.max_turns:
-                yield f"\n[达到最大轮数 {self.max_turns}，已熔断]\n"
+                yield {
+                    "type": "tool_status",
+                    "content": f"\n[达到最大轮数 {self.max_turns}，已熔断]\n",
+                }
+                yield {"type": "done"}
                 break
 
             tool_schemas = self.tools.registry.get_tool_schemas()
@@ -62,7 +63,7 @@ class AgentRunner:
                     full_reasoning += chunk["text"]
                 elif t == "content":
                     full_content += chunk["text"]
-                    yield chunk["text"]
+                    yield {"type": "text", "content": chunk["text"]}
                 elif t == "tool_call":
                     idx = chunk["index"]
                     if idx not in tool_calls_accum:
@@ -70,16 +71,15 @@ class AgentRunner:
                     for k in ("id", "name", "arguments"):
                         if k in chunk and chunk[k]:
                             if k == "arguments":
-                                tool_calls_accum[idx][k] += chunk[k]  # 拼接分片
+                                tool_calls_accum[idx][k] += chunk[k]
                             else:
-                                tool_calls_accum[idx][k] = chunk[k]   # id/name 覆盖
+                                tool_calls_accum[idx][k] = chunk[k]
 
             # ── 2. 写入助手消息 ──
-            # 确保 API 兼容：content 和 tool_calls 不能同时为空
             has_tool_calls = bool(tool_calls_accum)
             assistant_content: str | None = full_content or None
             if assistant_content is None and not has_tool_calls:
-                assistant_content = full_reasoning or ""  # fallback: 用 reasoning 或空串
+                assistant_content = full_reasoning or ""
             assistant_msg: dict = {"role": "assistant", "content": assistant_content}
             if full_reasoning:
                 assistant_msg["reasoning_content"] = full_reasoning
@@ -95,15 +95,15 @@ class AgentRunner:
             if not tool_calls_accum:
                 if self.bus:
                     self.bus.emit("turn:end", {"text": full_content})
+                yield {"type": "done"}
                 return
 
             # ── 4. 执行工具 ──
             tool_results: dict[str, str] = {}
             for item in self.tools.execute(assistant_msg["tool_calls"]):
-                if isinstance(item, dict):
+                if item.get("type") == "tool_result":
                     tool_results[item["id"]] = item["result"]
-                else:
-                    yield str(item)
+                yield item
 
             # ── 5. 写入工具结果 ──
             for tc in assistant_msg["tool_calls"]:
