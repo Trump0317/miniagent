@@ -6,10 +6,10 @@
 <title>miniagent</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font:14px/1.6 sans-serif;background:#1a1a2e;color:#e0e0e0;height:100vh;display:flex}
+body{font:14px/1.6 'SF Mono','Fira Code',monospace;background:#1a1a2e;color:#e0e0e0;height:100vh;display:flex}
 /* 侧栏 */
 #sidebar{width:220px;background:#111;display:flex;flex-direction:column;border-right:1px solid #333;flex-shrink:0}
-#sidebar h2{padding:16px;font-size:15px;border-bottom:1px solid #333}
+#sidebar h2{padding:16px;font-size:15px;border-bottom:1px solid #333;color:#6c63ff}
 #sidebar button{border:none;background:#6c63ff;color:#fff;padding:8px;margin:8px 12px;border-radius:6px;cursor:pointer;font:inherit}
 #sidebar button:hover{opacity:.9}
 #session-list{flex:1;overflow-y:auto;list-style:none}
@@ -27,9 +27,24 @@ body{font:14px/1.6 sans-serif;background:#1a1a2e;color:#e0e0e0;height:100vh;disp
 #input:focus{outline:none;border-color:#6c63ff}
 #send{padding:10px 20px;margin-left:8px;background:#6c63ff;color:#fff;border:none;border-radius:6px;cursor:pointer;font:inherit}
 #send:disabled{opacity:.5;cursor:default}
-.msg{margin:8px 0;padding:10px 14px;border-radius:8px;max-width:85%;white-space:pre-wrap;word-break:break-word}
-.msg.user{background:#6c63ff;color:#fff;margin-left:auto}
-.msg.assistant{background:#2d2d4a;color:#e0e0e0}
+/* 消息气泡 */
+.msg-row{margin:12px 0;display:flex;flex-direction:column}
+.msg-row.user{align-items:flex-end}
+.msg-row.user .bubble{background:#6c63ff;color:#fff;border-radius:10px 10px 0 10px;padding:10px 14px;max-width:80%;white-space:pre-wrap;word-break:break-word}
+.msg-row.assistant{align-items:flex-start}
+.msg-row.assistant .bubble{background:#2d2d4a;color:#e0e0e0;border-radius:10px 10px 10px 0;padding:10px 14px;max-width:90%;white-space:pre-wrap;word-break:break-word;line-height:1.7}
+/* 工具状态 */
+.tool-line{display:flex;align-items:center;gap:6px;margin:6px 0;padding:4px 10px;background:#1e1e35;border-radius:6px;font-size:12px;color:#8b8ba0;max-width:90%}
+.tool-line .icon{font-size:14px}
+.tool-done .icon{color:#4caf50}
+.tool-running .icon{color:#f0a040}
+/* 折叠工具输出 */
+.tool-output{margin:4px 0 4px 20px;padding:8px 12px;background:#16162a;border-left:2px solid #444;border-radius:0 6px 6px 0;font-size:12px;color:#aaa;max-width:90%;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;display:none}
+.tool-output.open{display:block}
+.tool-toggle{cursor:pointer;color:#6c63ff;font-size:12px;margin-left:20px;user-select:none}
+.tool-toggle:hover{opacity:.8}
+/* 思考中 */
+.typing{cursor:default}
 #status{font-size:12px;color:#888;text-align:center;padding:4px;min-height:20px}
 </style>
 </head>
@@ -38,6 +53,14 @@ body{font:14px/1.6 sans-serif;background:#1a1a2e;color:#e0e0e0;height:100vh;disp
   <h2>miniagent</h2>
   <button onclick="newSession()">+ 新建会话</button>
   <ul id="session-list"></ul>
+  <div id="tree-section" style="display:none">
+    <div style="padding:8px 16px;font-size:12px;color:#888;border-top:1px solid #333">分支树</div>
+    <div id="tree-view" style="padding:4px 8px;font-size:11px;max-height:300px;overflow-y:auto"></div>
+    <div style="padding:4px 8px;display:flex;gap:4px">
+      <button onclick="doBack()" style="flex:1;font-size:11px;padding:4px">← 返回</button>
+      <button onclick="refreshTree()" style="flex:1;font-size:11px;padding:4px">刷新</button>
+    </div>
+  </div>
 </div>
 
 <div id="main">
@@ -69,8 +92,7 @@ function connect() {
   ws.onopen = () => { status.textContent = '已连接'; loadSessions(); };
   ws.onclose = () => { status.textContent = '断开，刷新重连'; };
   ws.onerror = () => { status.textContent = '连接错误'; };
-
-  ws.onmessage = null; // will be set per-message
+  ws.onmessage = null;
 }
 
 // ── 会话管理 ──
@@ -81,11 +103,7 @@ async function loadSessions() {
     const resp = await fetch('/api/sessions');
     sessions = await resp.json();
   } catch(e) {}
-
-  if (sessions.length === 0) {
-    await newSession();
-    return;
-  }
+  if (sessions.length === 0) { await newSession(); return; }
   renderSessions(sessions);
   selectSession(sessions[0].id);
 }
@@ -94,7 +112,7 @@ async function newSession() {
   const resp = await fetch('/api/sessions', { method: 'POST' });
   const data = await resp.json();
   selectSession(data.id);
-  loadSessions(); // 刷新列表
+  loadSessions();
 }
 
 function renderSessions(sessions) {
@@ -109,37 +127,33 @@ function renderSessions(sessions) {
   }
 }
 
-// ── 消息缓存（按会话）──
-const msgCache = {}; // session_id → [htmlElement, ...] 或 innerHTML string
+const msgCache = {};
 
 function selectSession(sid) {
   if (sid === currentSession) return;
-  // 保存当前会话的消息
-  if (currentSession) {
-    msgCache[currentSession] = msgBox.innerHTML;
-  }
+  if (currentSession) msgCache[currentSession] = msgBox.innerHTML;
   currentSession = sid;
-  // 恢复目标会话的消息
   msgBox.innerHTML = msgCache[sid] || '';
   header.textContent = '会话: ' + sid;
-  // 更新侧栏高亮
-  for (const li of sessionList.children) {
-    li.classList.toggle('active', li.dataset.id === sid);
-  }
-  // 通知后端
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'switch', session_id: sid }));
-  }
+  for (const li of sessionList.children) li.classList.toggle('active', li.dataset.id === sid);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'switch', session_id: sid }));
+  refreshTree();
 }
 
-// ── 发送消息 ──
+// ── 消息渲染 ──
 
-function append(role, text) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + role;
-  div.textContent = text;
-  msgBox.appendChild(div);
-  msgBox.scrollTop = msgBox.scrollHeight;
+function makeRow(cls) {
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + cls;
+  msgBox.appendChild(row);
+  return row;
+}
+
+function makeBubble(row) {
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  row.appendChild(b);
+  return b;
 }
 
 function send() {
@@ -153,47 +167,199 @@ function send() {
   input.style.height = 'auto';
   status.textContent = '思考中...';
 
-  append('user', text);
-  const assistantDiv = document.createElement('div');
-  assistantDiv.className = 'msg assistant';
-  assistantDiv.textContent = '';
-  msgBox.appendChild(assistantDiv);
+  // 内置命令在前端拦截
+  if (isCommand(text)) {
+    busy = false;
+    sendBtn.disabled = false;
+    status.textContent = '就绪';
+    input.focus();
+    return;
+  }
+
+  // 用户消息
+  const userRow = makeRow('user');
+  const userBubble = makeBubble(userRow);
+  userBubble.textContent = text;
+  msgBox.scrollTop = msgBox.scrollHeight;
+
+  // 助手消息容器
+  const assistantRow = makeRow('assistant');
+  let currentBubble = null;      // 当前正文气泡
+  let pendingToolDiv = null;     // 当前工具状态行
+  let pendingOutputDiv = null;   // 当前工具输出块
+  let toolOutputToggle = null;   // 工具输出折叠按钮
+  let toolOutputLines = 0;
+
+  function flushTool() {
+    // 如果工具有输出，创建折叠按钮
+    if (pendingOutputDiv && toolOutputLines > 0) {
+      pendingOutputDiv.classList.add('open');
+      const toggle = document.createElement('div');
+      toggle.className = 'tool-toggle';
+      toggle.textContent = '▾ 工具输出 (' + toolOutputLines + ' 行)';
+      toggle.onclick = function() {
+        const open = pendingOutputDiv.classList.toggle('open');
+        this.textContent = (open ? '▾' : '▸') + ' 工具输出 (' + toolOutputLines + ' 行)';
+      };
+      assistantRow.appendChild(toggle);
+    }
+    pendingToolDiv = null;
+    pendingOutputDiv = null;
+    toolOutputToggle = null;
+    toolOutputLines = 0;
+  }
+
+  function ensureBubble() {
+    if (!currentBubble) { currentBubble = makeBubble(assistantRow); }
+    return currentBubble;
+  }
 
   ws.onmessage = (e) => {
     const data = JSON.parse(e.data);
+
     if (data.type === 'text') {
-      assistantDiv.textContent += data.content;
+      // 如果有活跃的工具输出块，追加到工具输出
+      if (pendingOutputDiv) {
+        pendingOutputDiv.textContent += data.content;
+        toolOutputLines = pendingOutputDiv.textContent.split('\n').length;
+        msgBox.scrollTop = msgBox.scrollHeight;
+        return;
+      }
+      ensureBubble();
+      currentBubble.textContent += data.content;
       msgBox.scrollTop = msgBox.scrollHeight;
+
     } else if (data.type === 'tool_status') {
-      assistantDiv.textContent += data.content;
+      const isDone = data.content.includes('✓');
+      flushTool();
+      const toolDiv = document.createElement('div');
+      toolDiv.className = 'tool-line ' + (isDone ? 'tool-done' : 'tool-running');
+      toolDiv.innerHTML = '<span class=icon>' + (isDone ? '✓' : '⚙') + '</span> ' + data.content.trim();
+      assistantRow.appendChild(toolDiv);
+
+      if (!isDone) {
+        // 工具开始执行，准备接收输出
+        pendingToolDiv = toolDiv;
+        pendingOutputDiv = document.createElement('div');
+        pendingOutputDiv.className = 'tool-output';
+        assistantRow.appendChild(pendingOutputDiv);
+      } else {
+        // 工具完成
+        pendingToolDiv = null;
+        pendingOutputDiv = null;
+        toolOutputLines = 0;
+      }
       msgBox.scrollTop = msgBox.scrollHeight;
+
     } else if (data.type === 'done') {
+      flushTool();
       busy = false;
       sendBtn.disabled = false;
       status.textContent = '就绪';
       input.focus();
       ws.onmessage = null;
+      msgBox.scrollTop = msgBox.scrollHeight;
     }
   };
 
   ws.send(JSON.stringify({ type: 'message', session_id: currentSession, content: text }));
 }
 
+// ── 内置命令 ──
+
+function isCommand(text) {
+  if (text === '/tree') { refreshTree(); return true; }
+  if (text === '/back') { doBack(); return true; }
+  return false;
+}
+
 // ── 快捷键 ──
 
 input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
-
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 });
 
 connect();
+
+// ── 分支树 ──
+
+async function refreshTree() {
+  if (!currentSession) return;
+  const resp = await fetch('/api/sessions/' + currentSession + '/tree');
+  const data = await resp.json();
+  renderTree(data);
+  document.getElementById('tree-section').style.display = 'block';
+}
+
+function renderTree(data) {
+  const view = document.getElementById('tree-view');
+  if (!data.nodes.length) { view.innerHTML = '<span style=color:#555>(空)</span>'; return; }
+
+  const nodes = {};
+  for (const n of data.nodes) nodes[n.id] = n;
+  const children = {};
+  for (const n of data.nodes) {
+    const pid = n.parent_id || 'root';
+    if (!children[pid]) children[pid] = [];
+    children[pid].push(n);
+  }
+  for (const k of Object.keys(children)) children[k].sort((a,b) => a.timestamp - b.timestamp);
+
+  let html = '';
+  const roots = children['root'] || [];
+  for (let i = 0; i < roots.length; i++) {
+    html += _renderNode(roots[i], nodes, children, data.leaf_id, '', (i === roots.length - 1));
+  }
+  view.innerHTML = html;
+}
+
+function _short(text, role, type) {
+  if (type === 'compaction') return '[压缩]';
+  if (role === 'tool') return '[tool]';
+  return text.slice(0, 30);
+}
+
+function _renderNode(node, nodes, children, leafId, prefix, isLast) {
+  const conn = prefix + (isLast ? '└ ' : '├ ');
+  const next = prefix + (isLast ? '  ' : '│ ');
+  const marker = node.id === leafId ? ' ←' : '';
+  const label = _short(node.content, node.role, node.type);
+  const cls = node.role === 'user' ? ' style=color:#6c63ff;cursor:pointer' : '';
+  const onclick = (node.role === 'user' && node.parent_id)
+    ? ` onclick="doFork('${node.parent_id}')" title="分叉到此消息之前"` : '';
+
+  let out = `<div>${conn}<span${cls}${onclick}>${node.role}: ${label}${marker}</span></div>`;
+  const kids = children[node.id] || [];
+  for (let i = 0; i < kids.length; i++) {
+    out += _renderNode(kids[i], nodes, children, leafId, next, (i === kids.length - 1));
+  }
+  return out;
+}
+
+async function doFork(targetId) {
+  if (!currentSession) return;
+  await fetch('/api/sessions/' + currentSession + '/fork?target_id=' + targetId, { method: 'POST' });
+  msgCache[currentSession] = '';
+  selectSession(currentSession);
+  refreshTree();
+}
+
+async function doBack() {
+  if (!currentSession) return;
+  const resp = await fetch('/api/sessions/' + currentSession + '/back', { method: 'POST' });
+  const data = await resp.json();
+  if (data.ok) {
+    msgCache[currentSession] = '';
+    selectSession(currentSession);
+    refreshTree();
+  } else {
+    alert(data.error);
+  }
+}
 </script>
 </body>
 </html>

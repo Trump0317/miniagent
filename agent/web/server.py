@@ -61,6 +61,54 @@ async def create_session():
     return {"id": info.id, "created": info.created.isoformat()}
 
 
+@app.get("/api/sessions/{session_id}/tree")
+async def session_tree(session_id: str):
+    """获取会话分支树."""
+    agent = sessions.get_or_create_agent(session_id)
+    entries = agent.memory.get_tree_entries()
+    if not entries:
+        return {"nodes": [], "leaf_id": None}
+
+    nodes = []
+    for e in entries:
+        nodes.append({
+            "id": e.id,
+            "parent_id": e.parent_id,
+            "type": e.type,
+            "role": e.role,
+            "content": (e.content or "")[:60],
+            "timestamp": e.timestamp,
+        })
+    return {"nodes": nodes, "leaf_id": agent.memory.leaf_id}
+
+
+@app.post("/api/sessions/{session_id}/fork")
+async def session_fork(session_id: str, target_id: str = ""):
+    """分叉到指定父节点."""
+    agent = sessions.get_or_create_agent(session_id)
+    if not target_id:
+        return {"ok": False, "error": "缺少 target_id"}
+    try:
+        agent.memory.push_fork()
+        agent.memory.fork(target_id)
+        agent._system_prompt = agent._prompt.build()
+        return {"ok": True, "leaf_id": agent.memory.leaf_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/sessions/{session_id}/back")
+async def session_back(session_id: str):
+    """返回分叉前位置."""
+    agent = sessions.get_or_create_agent(session_id)
+    target = agent.memory.pop_fork()
+    if target:
+        agent.memory.navigate(target)
+        agent._system_prompt = agent._prompt.build()
+        return {"ok": True, "leaf_id": agent.memory.leaf_id}
+    return {"ok": False, "error": "fork 栈为空"}
+
+
 # ── WebSocket 端点 ──
 
 
