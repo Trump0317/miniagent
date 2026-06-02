@@ -5,51 +5,61 @@
 **miniagent** 是一个基于 LLM 的智能助手框架（约 3000 行 Python），采用 **ReAct 模式 + 事件驱动 + 树状会话**架构。支持工具调用、多 Provider 切换、子代理、会话分支/分叉、上下文压缩、三层记忆等功能。
 
 - **语言**: Python 3.12+
-- **依赖**: openai >= 2.0, pydantic >= 2.0, python-dotenv >= 1.0
-- **入口**: `agent.py`（CLI Harness 层）
+- **核心依赖**: openai >= 2.0, pydantic >= 2.0, python-dotenv >= 1.0
+- **可选依赖（TUI）**: prompt_toolkit >= 3.0, rich >= 13.0
+- **可选依赖（Web）**: fastapi, websockets
+- **入口**: `agent.py`（CLI / TUI 分发）
 - **虚拟环境**: `.venv`
 - **模型**: DeepSeek V4 Flash（默认）
 
 ## 架构总览
 
 ```
-agent.py                          ← CLI 入口（交互/print 模式 + @文件引用 + 管道输入 + /fork /back /tree）
+agent.py                          ← 轻量入口（CLI --tui 分发）
 └── agent/
     ├── __init__.py                ← 公共导出
     ├── ai/                        ← AI 层
     │   ├── config.py              ← AppConfig: 多 Provider（DeepSeek/OpenAI/自定义）+ 会话隔离
     │   ├── llm.py                 ← LLMClient: OpenAI 兼容流式调用封装
     │   └── context.py             ← 自动加载 AGENTS.md/CLAUDE.md
+    ├── cli/                       ← CLI 外壳
+    │   ├── __init__.py            ← 公共导出
+    │   ├── app.py                 ← CLI 应用程序（交互/print 模式、readline、argparse）
+    │   └── helpers.py             ← handle_tree / handle_fork / handle_back CLI 辅助函数
+    ├── tui/                       ← TUI 终端界面（基于 prompt_toolkit，开发中）
+    │   ├── __init__.py
+    │   └── app.py                 ← TuiApp: 对话气泡、流式输出、分叉/返回
     ├── core/                      ← 核心引擎
-    │   ├── agent.py               ← Agent: 组装组件 + process() + shutdown()
+    │   ├── agent.py               ← Agent: 组装组件 + process() + shutdown()（160 行）
+    │   ├── chunks.py              ← ChunkType 枚举 + text_chunk() 等工厂函数
     │   ├── runner.py              ← AgentRunner: think-act 循环编排
     │   ├── session_tree.py        ← SessionTree: 树状会话（分叉/导航/压缩节点）
     │   ├── system_prompt.py       ← SystemPrompt: 系统提示词构建（实时查询 memory 动态部分）
-    │   ├── compaction.py          ← CompactionService: 压缩编排（切点→提取→分发→树压缩→重建提示词，含 LLM 提取）
+    │   ├── system_prompt.md       ← 系统提示词模板
+    │   ├── compaction.py          ← CompactionService: 压缩编排
     │   ├── events.py              ← EventBus: 发布/订阅 + 通配符 + 一次性监听
     │   ├── memory.py              ← AgentMemory: 树存储（单源）+ 三层记忆 + JSONL 持久化
     │   ├── tracker.py             ← TokenTracker: JSONL 日志 + 聚合统计
-    │   ├── prompts.py             ← PromptLoader: /command 模板加载
-    │   └── cli_helpers.py         ← handle_tree / handle_fork / handle_back CLI 辅助函数
+    │   └── prompts.py             ← PromptLoader: /command 模板加载
     ├── tools/                     ← 扁平工具集（每个工具一个 py 文件）
-    │   ├── base.py                ← Tool 基类 + @tool 装饰器 + schema 瘦身（保留 anyOf+default）
-    │   ├── registry.py            ← ToolRegistry: 工具注册/查找/schema 生成
-    │   ├── executor.py            ← ToolExecutor: 流式输出（yield）+ 串行/并行调度
-    │   ├── bash.py                ← BashTool: 终端命令 + 安全护栏 + 流式输出（空输出确认）
+    │   ├── base.py                ← Tool 基类 + @tool 装饰器 + schema 瘦身
+    │   ├── registry.py            ← ToolRegistry + build_default_registry()
+    │   ├── executor.py            ← ToolExecutor: 流式输出 + 串行/并行调度
+    │   ├── bash.py                ← BashTool
     │   ├── file_read.py           ← 文件读取
     │   ├── file_write.py          ← 文件写入
-    │   ├── file_edit.py           ← 文件编辑（精确匹配 + 忽略缩进模糊匹配）
+    │   ├── file_edit.py           ← 文件编辑
     │   ├── web_fetch.py           ← 网页抓取
     │   ├── web_search.py          ← 网络搜索
     │   ├── skill.py               ← SkillsLoader + SkillTool
-    │   ├── todo.py                ← TodoWriteTool: 有状态待办管理
-    │   └── subagent.py            ← SubagentRunner + SubagentTool: 单/并行/链式子代理
+    │   ├── todo.py                ← TodoWriteTool
+    │   └── subagent.py            ← SubagentRunner + SubagentTool
     ├── subagent/                  ← 子代理定义（Markdown + YAML frontmatter）
-    │   ├── scout.md               ← 代码侦查员
-    │   └── reviewer.md            ← 代码审查员
+    │   ├── scout.md
+    │   └── reviewer.md
     └── prompts/                   ← 命令模板
-        ├── scout.md               ← /scout 展开
-        └── review.md              ← /review 展开
+        ├── scout.md
+        └── review.md
 ```
 
 ## 核心设计原则
@@ -96,7 +106,7 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
 ## 关键模块详解
 
 ### Agent（`agent/core/agent.py`）
-- 纯装配层（~130 行），创建并连接所有组件
+- 纯装配层（~160 行），创建并连接所有组件
 - `process()` 流式处理用户消息，Runner 在 context 快照上工作，末端统一同步到 memory
 - `shutdown()` 调用 CompactionService.compact() 执行压缩
 
@@ -104,6 +114,11 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
 - **SystemPrompt** (`system_prompt.py`): 持有静态上下文引用，`build(compaction_data)` 实时查询 memory 动态部分
 - **CompactionService** (`compaction.py`): 编排完整压缩流程（提取 → 分发 → 树压缩 → 重建提示词）
 - **`build_default_registry()`** (`tools/registry.py`): 构建 Agent 和子代理的工具注册表
+
+### Chunk 协议（`agent/core/chunks.py`）
+- `ChunkType` (StrEnum): `TEXT` / `TOOL_STATUS` / `TOOL_RESULT` / `DONE`
+- `text_chunk()` / `tool_status_chunk()` / `tool_result_chunk()` / `done_chunk()` 工厂函数
+- Runner 和 Executor 产出 chunk，CLI/Web/TUI 消费者按 type 分发
 
 ### SessionTree（`agent/core/session_tree.py`）
 **树状会话结构**，替代线性列表：
@@ -218,16 +233,32 @@ agent/.memory/
 
 ## CLI 特性
 
+CLI 代码已从 `agent.py` 提取到 `agent/cli/`:
+- `app.py`: 交互/print 模式、readline 历史、argparse、/command 展开、管道输入
+- `helpers.py`: `handle_tree()` / `handle_fork()` / `handle_back()`
+
+`agent.py` 现为轻量入口（7 行），通过 `--tui` 标志分发到 CLI 或 TUI 模式。
+
 - `-p` print 模式（非交互）
 - `-r` / `--restore` 恢复最近会话历史
+- `--tui` 启动 TUI 模式
 - `--thinking off|minimal|low|medium|high|xhigh` 思维链级别
 - `-nc` 禁用上下文文件
 - `@file.py` 文件引用展开
 - 管道输入（`cat README.md | python agent.py -p "总结"`）
 - `/command` 模板展开（`/scout`, `/review`）
-- **`/fork [n]`** — 分叉到第 n 条用户消息之前（默认倒数第 2 条），创建新分支（不含该消息）
-- **`/back`** — 返回分叉前的位置（利用 fork 跳转栈）
+- **`/fork [n]`** — 分叉到第 n 条用户消息之前
+- **`/back`** — 返回分叉前的位置
 - **`/tree`** — 显示会话分支树可视化
+
+## TUI 特性（开发中）
+
+基于 prompt_toolkit 的终端界面（`agent/tui/app.py`），对齐 pi-tui 风格：
+- 对话气泡（👤 You 蓝 / 🤖 Agent 绿 / 🔧 Tool 灰）
+- 流式输出 + spinner 动画
+- 工具结果可折叠
+- 快捷键：Ctrl+Q 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 分支树
+- Header 显示模型 + 会话 ID
 
 ### 内置命令流程
 
@@ -282,12 +313,12 @@ python -m unittest discover tests
 python -m unittest tests.test_events
 ```
 
-### 已覆盖模块（截至 2026-05-30）
+### 已覆盖模块（截至 2026-06-02）
 
 | 模块 | 文件 | 测试数 | 类型 |
 |------|------|--------|------|
 | EventBus | `test_events.py` | 28 | 单元 |
-| SessionTree | `test_session_tree.py` | 56 | 单元 |
+| SessionTree | `test_session_tree.py` | 58 | 单元 |
 | AgentMemory | `test_memory.py` | 59 | 单元 |
 | TokenTracker | `test_tracker.py` | 27 | 单元 |
 | PromptLoader | `test_prompts.py` | 21 | 单元 |
@@ -306,35 +337,40 @@ python -m unittest tests.test_events
 | WebFetchTool | `test_web_fetch.py` | 7 | 单元 |
 | WebSearchTool | `test_web_search.py` | 7 | 单元 |
 | AgentLoader + SubagentTool | `test_subagent.py` | 45 | 单元 |
-| **合计** | | **473** | |
+| **合计** | | **475** | |
 
 ## 待办计划
 
 ### 1. 优化提示词 ✅
-
 - [x] 审查并优化 SystemPrompt 的系统提示词内容 → 外部模板文件
 - [x] 优化子代理（scout / reviewer）的提示词 → 结构化流程+清单
 - [x] 优化命令模板（/scout / /review）的展开模板 → 细化指引
 - [ ] 考虑添加任务分解/规划相关的提示词引导
 
 ### 2. 实现 Web UI ✅（explore 分支）
-
 - [x] FastAPI + WebSocket 流式对话
 - [x] Agent 核心统一 chunk 格式（text/tool_status/done），CLI/Web 共用
-- [x] 多会话管理（新建/切换/删除）
-- [x] 实时流式输出，按类型渲染（正文/工具状态/工具输出可折叠）
-- [x] 会话历史从后端 API 加载，刷新不丢失
-- [x] 分支树可视化 + fork/back 操作
-- [x] Markdown 渲染（marked.js）：代码块、列表、表格
-- [x] 界面设计：Inter 字体、毛玻璃风格、动画、代码复制按钮
+- [x] 多会话管理、实时流式输出、Markdown 渲染
 - [ ] 文件上传和 @引用
 - [ ] 模型/Provider 切换
 
-### 3. 优化 CLI ✅（explore 分支）
+### 3. 优化 CLI ✅
+- [x] CLI 代码提取到 `agent/cli/`，`agent.py` 瘦身为 7 行入口
+- [x] readline 命令历史、/help /session /clear 命令
+- [ ] 配置管理命令
 
-- [x] readline 命令历史（↑↓回溯，退出持久化到 ~/.miniagent/.history）
-- [x] /help 命令（列出所有内置命令 + 模板命令）
-- [x] /session 命令（会话 ID/模型/Token 用量/存储路径）
-- [x] /clear 清屏命令
-- [x] 启动信息精简为一行
-- [ ] 考虑添加配置管理命令（查看/切换 provider、model 等）
+### 4. Core 重构 ✅
+- [x] `session_tree.py`: 删除内嵌测试（532→326 行）
+- [x] `memory.py`: 关闭 SessionTree 私有成员访问（add_entry/set_leaf/find_deepest_leaf）
+- [x] `memory.py`: `non_system_entries()` 委托给 `tree.to_messages()`
+- [x] `agent.py`: 提取 `_build_registry()` → `tools/registry.py`
+- [x] `memory.py`: 提取 `_entry_to_row()` 消除 JSONL 序列化重复
+- [x] `runner.py` + `executor.py`: `ChunkType` 枚举 + 工厂函数
+- [x] `compaction.py`: `_last_usage` 隐式状态 → 显式参数
+
+### 5. TUI 终端界面 🚧
+- [x] 创建 `agent/tui/` 模块（基于 prompt_toolkit）
+- [x] 对话气泡、流式输出、spinner 动画
+- [x] 快捷键：Ctrl+Q/F/B/T
+- [ ] 修复自动滚动到底部
+- [ ] 测试覆盖
