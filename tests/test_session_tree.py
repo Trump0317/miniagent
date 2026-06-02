@@ -429,8 +429,8 @@ class TestSessionTreeBuildContext(unittest.TestCase):
             id="skip", parent_id=self.tree.leaf_id, type="custom",
             role="user", content="skipped"
         )
-        self.tree._entries["skip"] = entry
-        self.tree._leaf_id = "skip"
+        self.tree.add_entry(entry)
+        self.tree.set_leaf("skip")
         ctx = self.tree.build_context()
         self.assertEqual(ctx, [])
 

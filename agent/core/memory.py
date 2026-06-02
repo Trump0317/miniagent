@@ -85,7 +85,7 @@ class AgentMemory:
     @property
     def has_data(self) -> bool:
         """树中是否有数据（用于判断是否从历史恢复）"""
-        return self._tree._root_id is not None
+        return self._tree.root_id is not None
 
     @property
     def entry_count(self) -> int:
@@ -171,7 +171,7 @@ class AgentMemory:
 
     def get_tree_entries(self) -> list[SessionEntry]:
         """获取所有树条目的只读列表"""
-        return list(self._tree._entries.values())
+        return list(self._tree.entries().values())
 
     # ── fork 跳转栈 ──
 
@@ -192,13 +192,13 @@ class AgentMemory:
 
     def _write_jsonl_full(self) -> None:
         """全量持久化树到 JSONL（DFS 序）。压缩后调用。"""
-        if not self._tree._root_id:
+        if not self._tree.root_id:
             return
 
         self._session_dir.mkdir(parents=True, exist_ok=True)
 
         with self.history_file.open("w", encoding="utf-8") as f:
-            self._write_subtree(self._tree._root_id, f)
+            self._write_subtree(self._tree.root_id, f)
 
     def _write_subtree(self, entry_id: str, f) -> None:
         """DFS 写入子树（按子节点 timestamp 排序）"""
@@ -290,18 +290,12 @@ class AgentMemory:
                 tokens_before=row.get("tokens_before", 0) if entry_type == "compaction" else 0,
             )
 
-            self._tree._entries[entry_id] = entry
-            if self._tree._root_id is None:
-                self._tree._root_id = entry_id
+            self._tree.add_entry(entry)
 
         # 找 leaf: 从 root 沿最右子节点链走到底
-        if self._tree._root_id:
-            self._tree._leaf_id = self._tree._root_id
-            while True:
-                children = self._tree.children_of(self._tree._leaf_id)
-                if not children:
-                    break
-                self._tree._leaf_id = children[-1].id
+        leaf = self._tree.find_deepest_leaf()
+        if leaf:
+            self._tree.set_leaf(leaf)
 
     def _load_legacy_format(self, lines: list[str]) -> None:
         """从旧格式 JSONL（无树结构）转换为新格式树"""

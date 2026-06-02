@@ -93,6 +93,37 @@ class SessionTree:
         """所有 entry 的只读视图"""
         return dict(self._entries)
 
+    # ── 恢复操作（供 memory 层使用）──
+
+    def add_entry(self, entry: SessionEntry) -> None:
+        """直接添加一个 entry（用于从 JSONL 恢复树）。
+
+        首个添加的 entry 自动成为 root。不改变 leaf。
+        调用方需保证 DFS 序（parent 在 child 之前添加），否则将产生断链。
+        """
+        self._entries[entry.id] = entry
+        if self._root_id is None:
+            self._root_id = entry.id
+
+    def set_leaf(self, entry_id: str) -> None:
+        """直接设置 leaf 位置（用于恢复会话时定位到最后一条消息）。"""
+        if entry_id in self._entries:
+            self._leaf_id = entry_id
+
+    def find_deepest_leaf(self) -> str | None:
+        """从 root 沿最右子节点链走到底，返回 leaf id。
+
+        用于从 JSONL 恢复树后定位到会话末尾。
+        """
+        if self._root_id is None:
+            return None
+        node = self._root_id
+        while True:
+            children = self.children_of(node)
+            if not children:
+                return node
+            node = children[-1].id
+
     # ── 写操作 ──
 
     def append(
