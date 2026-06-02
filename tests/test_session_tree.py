@@ -223,6 +223,21 @@ class TestSessionTreeFork(unittest.TestCase):
         """navigate 效果与 fork 相同."""
         self.tree.navigate(self.u1)
         self.assertEqual(self.tree.leaf_id, self.u1)
+        # navigate 到 u1 后 path 只到 u1，不包含之前的 a1
+        path = self.tree.path()
+        self.assertEqual(len(path), 2)  # system, u1
+
+    def test_navigate_to_node_with_children(self):
+        """navigate 到已有子节点的条目，后续 append 从该处分支."""
+        # 先追加子节点
+        self.tree.append("user", "q2")
+        self.tree.append("assistant", "a2")
+        # 再 navigate 回 a1
+        self.tree.navigate(self.a1)
+        self.assertEqual(self.tree.leaf_id, self.a1)
+        path = self.tree.path()
+        # 只到 a1，不包含 a1 之后的 q2/a2
+        self.assertEqual(len(path), 3)
 
     def test_siblings(self):
         """返回兄弟节点（不含自己）."""
@@ -347,6 +362,18 @@ class TestSessionTreeCompact(unittest.TestCase):
         before = self.tree.leaf_id
         self.tree.compact("摘要", self.q2, 1000)
         self.assertEqual(self.tree.leaf_id, before)
+
+    def test_append_after_compact_context(self):
+        """压缩后追加消息，build_context 包含摘要+保留消息+新消息."""
+        self.tree.compact("摘要", self.q2, 1000)
+        self.tree.append("user", "q4")
+        self.tree.append("assistant", "a4")
+        ctx = self.tree.build_context()
+        # summary + q2 + a2 + q3 + a3 + tool + q4 + a4 = 8
+        self.assertEqual(len(ctx), 8)
+        self.assertIn("摘要", ctx[0]["content"])
+        self.assertIn("q2", ctx[1]["content"])
+        self.assertIn("q4", ctx[-2]["content"])
 
     def test_compact_first_kept_is_leaf(self):
         """first_kept 也可以是当前 leaf."""
