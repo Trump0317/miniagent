@@ -1,4 +1,4 @@
-"""CLI Harness — 交互/print 模式的完整外壳逻辑。
+"""CLI 应用程序 — 交互/print 模式的完整外壳逻辑。
 
 包含: readline 历史、输入处理、输出格式化、运行模式、main 入口。
 """
