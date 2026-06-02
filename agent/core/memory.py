@@ -416,14 +416,8 @@ class AgentMemory:
         return facts
 
     def non_system_entries(self) -> list[dict]:
-        """树中非 system 的纯消息列表，供 Compactor 使用。"""
-        entries = self._tree.non_system_entries()
-        result: list[dict] = []
-        for e in entries:
-            msg: dict = {"role": e.role, "content": e.content}
-            if e.role == "assistant" and e.metadata.get("tool_calls"):
-                msg["tool_calls"] = e.metadata["tool_calls"]
-            if e.role == "tool" and e.metadata.get("tool_call_id"):
-                msg["tool_call_id"] = e.metadata["tool_call_id"]
-            result.append(msg)
-        return result
+        """树中非 system 的纯消息列表，供 Compactor 使用。
+
+        委托给 SessionTree.to_messages()。
+        """
+        return self._tree.to_messages()

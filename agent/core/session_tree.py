@@ -313,11 +313,17 @@ class SessionTree:
         ]
 
     def to_messages(self, to_id: str | None = None) -> list[dict]:
-        """路径上的消息纯文本（不含 system），用于传给 LLM 压缩器"""
+        """路径上的消息纯文本（不含 system），用于传给 LLM 压缩器。
+
+        注意：与 build_context() 不同，此处不恢复 reasoning_content
+        （避免向压缩器透传思维链）。
+        """
         entries = self.non_system_entries(to_id)
         result: list[dict] = []
         for e in entries:
-            msg = {"role": e.role, "content": e.content}
+            msg: dict = {"role": e.role}
+            if e.content is not None:
+                msg["content"] = e.content
             if e.role == "assistant" and e.metadata.get("tool_calls"):
                 msg["tool_calls"] = e.metadata["tool_calls"]
             if e.role == "tool" and e.metadata.get("tool_call_id"):
