@@ -106,7 +106,7 @@ async def session_fork(session_id: str, target_id: str = ""):
     try:
         agent.memory.push_fork()
         agent.memory.fork(target_id)
-        agent._system_prompt = agent._prompt.build()
+        agent.rebuild_system_prompt()
         return {"ok": True, "leaf_id": agent.memory.leaf_id}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -119,7 +119,7 @@ async def session_back(session_id: str):
     target = agent.memory.pop_fork()
     if target:
         agent.memory.navigate(target)
-        agent._system_prompt = agent._prompt.build()
+        agent.rebuild_system_prompt()
         return {"ok": True, "leaf_id": agent.memory.leaf_id}
     return {"ok": False, "error": "fork 栈为空"}
 

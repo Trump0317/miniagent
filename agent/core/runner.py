@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Generator, TYPE_CHECKING
 
-from .chunks import text_chunk, tool_status_chunk, done_chunk, ChunkType
+from .chunks import text_chunk, reasoning_chunk, tool_status_chunk, done_chunk, ChunkType
 
 if TYPE_CHECKING:
     from .tracker import TokenTracker
@@ -58,6 +58,7 @@ class AgentRunner:
                     self._record(chunk)
                 elif t == "reasoning":
                     full_reasoning += chunk["text"]
+                    yield reasoning_chunk(chunk["text"])
                 elif t == "content":
                     full_content += chunk["text"]
                     yield text_chunk(chunk["text"])

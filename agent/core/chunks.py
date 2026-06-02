@@ -11,6 +11,7 @@ from typing import Any
 class ChunkType(StrEnum):
     """chunk 类型枚举。"""
     TEXT = "text"                # LLM 正文 / 工具实时输出
+    REASONING = "reasoning"      # LLM 推理/思考内容
     TOOL_STATUS = "tool_status"  # 工具执行状态
     TOOL_RESULT = "tool_result"  # 工具最终结果
     DONE = "done"                # 本轮结束
@@ -18,6 +19,10 @@ class ChunkType(StrEnum):
 
 def text_chunk(content: str) -> dict[str, Any]:
     return {"type": ChunkType.TEXT, "content": content}
+
+
+def reasoning_chunk(content: str) -> dict[str, Any]:
+    return {"type": ChunkType.REASONING, "content": content}
 
 
 def tool_status_chunk(content: str) -> dict[str, Any]:

@@ -26,7 +26,7 @@ agent.py                          ← 轻量入口（CLI --tui 分发）
     │   ├── __init__.py            ← 公共导出
     │   ├── app.py                 ← CLI 应用程序（交互/print 模式、readline、argparse）
     │   └── helpers.py             ← handle_tree / handle_fork / handle_back CLI 辅助函数
-    ├── tui/                       ← TUI 终端界面（基于 prompt_toolkit，开发中）
+    ├── tui/                       ← TUI 终端界面（基于 prompt_toolkit）
     │   ├── __init__.py
     │   └── app.py                 ← TuiApp: 对话气泡、流式输出、分叉/返回
     ├── core/                      ← 核心引擎
@@ -116,9 +116,10 @@ agent.py                          ← 轻量入口（CLI --tui 分发）
 - **`build_default_registry()`** (`tools/registry.py`): 构建 Agent 和子代理的工具注册表
 
 ### Chunk 协议（`agent/core/chunks.py`）
-- `ChunkType` (StrEnum): `TEXT` / `TOOL_STATUS` / `TOOL_RESULT` / `DONE`
-- `text_chunk()` / `tool_status_chunk()` / `tool_result_chunk()` / `done_chunk()` 工厂函数
+- `ChunkType` (StrEnum): `TEXT` / `REASONING` / `TOOL_STATUS` / `TOOL_RESULT` / `DONE`
+- `text_chunk()` / `reasoning_chunk()` / `tool_status_chunk()` / `tool_result_chunk()` / `done_chunk()` 工厂函数
 - Runner 和 Executor 产出 chunk，CLI/Web/TUI 消费者按 type 分发
+- `REASONING` chunk 用于 LLM 思考/推理内容（DeepSeek thinking），TUI 以斜体灰色展示
 
 ### SessionTree（`agent/core/session_tree.py`）
 **树状会话结构**，替代线性列表：
@@ -251,13 +252,17 @@ CLI 代码已从 `agent.py` 提取到 `agent/cli/`:
 - **`/back`** — 返回分叉前的位置
 - **`/tree`** — 显示会话分支树可视化
 
-## TUI 特性（开发中）
+## TUI 特性
 
 基于 prompt_toolkit 的终端界面（`agent/tui/app.py`），对齐 pi-tui 风格：
-- 对话气泡（👤 You 蓝 / 🤖 Agent 绿 / 🔧 Tool 灰）
+- 对话气泡，不同角色用不同颜色标签：**You** 蓝 / **Agent** 绿 / **Thinking** 灰斜体 / **Tool** 按状态着色
+- 思考内容实时流式显示（`REASONING` chunk），斜体灰色，完成时标签变 **Thought**
+- 工具结果按状态着色：执行中蓝底、成功绿底、错误红底
 - 流式输出 + spinner 动画
-- 工具结果可折叠
-- 快捷键：Ctrl+Q 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 分支树
+- 工具结果可折叠（Ctrl+E 展开/折叠）
+- 自动滚动到底部（光标驱动），鼠标滚轮 + PageUp/PageDown 翻页
+- 快捷键：Ctrl+Q 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 分支树、Ctrl+E 展开工具
+- Esc 退出树视图 / 清空输入
 - Header 显示模型 + 会话 ID
 
 ### 内置命令流程
@@ -337,7 +342,8 @@ python -m unittest tests.test_events
 | WebFetchTool | `test_web_fetch.py` | 7 | 单元 |
 | WebSearchTool | `test_web_search.py` | 7 | 单元 |
 | AgentLoader + SubagentTool | `test_subagent.py` | 45 | 单元 |
-| **合计** | | **475** | |
+| TUI | `test_tui.py` | 74 | 单元 |
+| **合计** | | **550** | |
 
 ## 待办计划
 
@@ -368,9 +374,11 @@ python -m unittest tests.test_events
 - [x] `runner.py` + `executor.py`: `ChunkType` 枚举 + 工厂函数
 - [x] `compaction.py`: `_last_usage` 隐式状态 → 显式参数
 
-### 5. TUI 终端界面 🚧
+### 5. TUI 终端界面 ✅
 - [x] 创建 `agent/tui/` 模块（基于 prompt_toolkit）
 - [x] 对话气泡、流式输出、spinner 动画
-- [x] 快捷键：Ctrl+Q/F/B/T
-- [ ] 修复自动滚动到底部
-- [ ] 测试覆盖
+- [x] 快捷键：Ctrl+Q 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 分支树、Ctrl+E 展开工具
+- [x] 修复自动滚动到底部（render_info 动态计算 scroll offset）
+- [x] 工具结果折叠/展开交互（Ctrl+E 切换）
+- [x] 树视图 Esc 退出、发送消息自动退出
+- [x] 测试覆盖（65 个测试）

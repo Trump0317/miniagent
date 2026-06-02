@@ -134,6 +134,12 @@ class Agent:
         self._system_prompt, compact_result = self._compaction.compact()
         return {"token_stats": stats, "compact": compact_result}
 
+    # ── 公共配置方法 ──
+
+    def rebuild_system_prompt(self) -> None:
+        """重建系统提示词（fork/back 后调用，反映新的上下文路径）。"""
+        self._system_prompt = self._prompt.build()
+
     # ── 内部 ──
 
     def _build_context(self) -> list[dict]:

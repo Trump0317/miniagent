@@ -1,6 +1,6 @@
 """CLI 应用程序 — 交互/print 模式的完整外壳逻辑。
 
-包含: readline 历史、输入处理、输出格式化、运行模式、main 入口。
+包含: readline 历史、智能输出缓冲（思考/工具/正文分发）、运行模式、main 入口。
 """
 
 from __future__ import annotations
@@ -10,6 +10,16 @@ import sys
 from pathlib import Path
 
 from ..core.chunks import ChunkType
+
+# ── ANSI 颜色 ──
+DIM = "\033[90m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+BOLD = "\033[1m"
+ITALIC = "\033[3m"
+RESET = "\033[0m"
 
 # ── readline: 命令历史和行编辑 ──
 try:
@@ -50,6 +60,27 @@ def read_stdin() -> str:
     return sys.stdin.read().strip()
 
 
+def read_multiline(first_line: str) -> str:
+    """读取多行输入。空行结束；\\ 续行符号。
+
+    用法：输入第一行后，后续行以空行结束；\\ 结尾表示续行。
+    """
+    lines = [first_line]
+    prompt = "    "  # 续行缩进提示
+    while True:
+        try:
+            line = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            break
+        if line == "":
+            break  # 空行结束
+        if line.rstrip().endswith("\\"):
+            lines.append(line.rstrip()[:-1])
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def expand_command(prompt_loader, user_input: str) -> str:
     """将 /command query 展开为 prompt 模板。普通输入原样返回。"""
     if not user_input.startswith("/"):
@@ -61,26 +92,99 @@ def expand_command(prompt_loader, user_input: str) -> str:
 
     resolved = prompt_loader.resolve(name, query)
     if resolved:
-        print(f"[模板 /{name}] → {resolved[:60]}{'...' if len(resolved) > 60 else ''}")
+        preview = resolved[:60]
+        print(f"[{CYAN}/{name}{RESET}] → {preview}{'...' if len(resolved) > 60 else ''}")
         return resolved
 
     return user_input
 
 
 # ═══════════════════════════════════════════════════════════════
-# 输出与显示
+# 智能输出处理器 — 缓冲思考内容，格式化工具输出
 # ═══════════════════════════════════════════════════════════════
 
-def output_chunk(chunk: dict) -> None:
-    """将结构化 chunk 输出到终端。"""
-    t = chunk.get("type", "")
-    if t in (ChunkType.TEXT, ChunkType.TOOL_STATUS):
-        print(chunk.get("content", ""), end="", flush=True)
+class OutputHandler:
+    """状态感知的流式输出处理器。
 
+    将 chunk 流按类型分发到不同渲染通道：
+      - REASONING: 灰色斜体，首次出现时打印 Thinking 标签
+      - TEXT: 正文直接输出，切换到正文时刷新残留思考标记
+      - TOOL_STATUS: 青色工具名，带缩进
+      - TOOL_RESULT: 灰色缩进输出，长结果截断
+      - DONE: 收尾，打印统计
+    """
+
+    def __init__(self, tracker=None):
+        self._thinking_active = False   # 是否正在打印思考内容
+        self._thinking_started = False  # 本轮是否有过思考
+        self._tool_count = 0            # 本轮工具调用数
+        self._tracker = tracker
+
+    def write(self, chunk: dict) -> None:
+        t = chunk.get("type", "")
+        if t == ChunkType.REASONING:
+            self._write_reasoning(chunk.get("content", ""))
+        elif t == ChunkType.TEXT:
+            self._write_text(chunk.get("content", ""))
+        elif t == ChunkType.TOOL_STATUS:
+            self._write_tool_status(chunk.get("content", ""))
+        elif t == ChunkType.TOOL_RESULT:
+            self._write_tool_result(chunk)
+        elif t == ChunkType.DONE:
+            self._write_done()
+
+    def _write_reasoning(self, text: str) -> None:
+        if not self._thinking_active:
+            print(f"\n  {DIM}{ITALIC}··· Thinking ···{RESET}")
+            self._thinking_active = True
+            self._thinking_started = True
+        print(f"{DIM}{text}{RESET}", end="", flush=True)
+
+    def _write_text(self, text: str) -> None:
+        if self._thinking_active:
+            print(f"\n  {DIM}───{RESET}")
+            self._thinking_active = False
+        print(text, end="", flush=True)
+
+    def _write_tool_status(self, content: str) -> None:
+        if self._thinking_active:
+            print(f"\n  {DIM}───{RESET}")
+            self._thinking_active = False
+        tool_name = content.strip().replace("\n", " ")
+        self._tool_count += 1
+        print(f"\n  {CYAN}{BOLD}#{self._tool_count} {tool_name}{RESET}", flush=True)
+
+    def _write_tool_result(self, chunk: dict) -> None:
+        result = chunk.get("result", "")
+        # 长结果截断
+        max_display = 2000
+        if len(result) > max_display:
+            truncated = result[:max_display]
+            print(f"{DIM}{truncated}{RESET}")
+            remaining = len(result) - max_display
+            print(f"  {DIM}... [{remaining} more chars, {len(result)} total]{RESET}")
+        elif result:
+            print(f"{DIM}{result}{RESET}")
+
+    def _write_done(self) -> None:
+        if self._thinking_active:
+            print(f"\n  {DIM}───{RESET}")
+            self._thinking_active = False
+
+    def reset(self) -> None:
+        """重置本轮状态，准备下一轮。"""
+        self._thinking_active = False
+        self._thinking_started = False
+        self._tool_count = 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 显示函数
+# ═══════════════════════════════════════════════════════════════
 
 def print_help(agent) -> None:
     """显示所有可用命令。"""
-    print("\n内置命令:")
+    print(f"\n{BOLD}内置命令:{RESET}")
     print("  /help           — 显示此帮助")
     print("  /clear          — 清屏")
     print("  /session        — 显示会话信息")
@@ -89,8 +193,10 @@ def print_help(agent) -> None:
     print("  /back           — 返回分叉前的位置")
     cmds = agent.prompt_loader.list_commands()
     if cmds:
-        print("\n" + cmds)
-    print("\n快捷键: Enter 发送, Ctrl+C/Ctrl+D 退出\n")
+        print(f"\n{BOLD}模板命令:{RESET}")
+        print(cmds)
+    print(f"\n{BOLD}输入:{RESET} Enter 发送, Ctrl+C/Ctrl+D 退出, 空行结束多行输入")
+    print(f"        \\ 续行, 或直接粘贴多行文本\n")
 
 
 def print_session_info(agent) -> None:
@@ -106,18 +212,20 @@ def print_session_info(agent) -> None:
     if stats:
         total_in = sum(s["input"] for s in stats.values())
         total_out = sum(s["output"] for s in stats.values())
-        print(f"  Token:     输入 {total_in}, 输出 {total_out}")
+        total_cache = sum(s.get("cache_hit", 0) for s in stats.values())
+        print(f"  Token:     输入 {total_in:,}, 输出 {total_out:,}, 缓存命中 {total_cache:,}")
     print()
 
 
 def print_startup_info(agent) -> None:
     """启动摘要"""
     cfg = agent.config
-    print(f"miniagent · {cfg.model}", end="")
+    parts = [f"{BOLD}miniagent{RESET} · {cfg.model}"]
     if agent.runner.llm.thinking:
-        print(f" · 思考:{agent.runner.llm.thinking}", end="")
-    print(f" · 会话:{cfg.session_id}")
-    print("输入 /help 查看命令\n")
+        parts.append(f"思考:{agent.runner.llm.thinking}")
+    parts.append(f"会话:{cfg.session_id[:12]}")
+    print("  ".join(parts))
+    print(f"输入 {CYAN}/help{RESET} 查看命令\n")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -129,13 +237,14 @@ def shutdown(agent) -> None:
     result = agent.shutdown()
     stats = result["token_stats"]
     if stats:
-        print("\n[Tokens] 本次会话 Token 消耗统计:")
+        print(f"\n{BOLD}Token 消耗:{RESET}")
         for m, s in stats.items():
-            print(f"  - {m}: 输入 {s['input']}, 输出 {s['output']}, 缓存命中 {s['cache_hit']}")
+            print(f"  {m}: 输入 {s['input']:,}, 输出 {s['output']:,},"
+                  f" 缓存命中 {s.get('cache_hit', 0):,}")
 
     compact = result["compact"]
     if compact.get("summary") or compact.get("preferences"):
-        print("[Memory] 已自动压缩并保存本次会话记录")
+        print(f"{DIM}[Memory] 已自动压缩并保存本次会话记录{RESET}")
     # 保存命令历史
     if readline:
         readline.write_history_file(str(_HISTFILE))
@@ -145,8 +254,9 @@ def shutdown(agent) -> None:
 def run_print_mode(agent, msg: str) -> None:
     """非交互模式：处理一条消息，输出结果后退出。"""
     msg = expand_command(agent.prompt_loader, msg)
+    handler = OutputHandler()
     for chunk in agent.process(msg):
-        output_chunk(chunk)
+        handler.write(chunk)
     print()
     shutdown(agent)
 
@@ -155,18 +265,20 @@ def run_interactive(agent, initial_message: str = "") -> None:
     """交互式主循环。"""
     from .helpers import handle_tree, handle_back, handle_fork
 
+    handler = OutputHandler()
+
     # 初始消息
     if initial_message:
         msg = expand_command(agent.prompt_loader, initial_message)
-        print(f"[You] : {initial_message}")
-        print("[Assistant] : ", end="", flush=True)
+        print(f"\n{BOLD}You{RESET}  {initial_message}")
         for chunk in agent.process(msg):
-            output_chunk(chunk)
+            handler.write(chunk)
         print("\n")
+        handler.reset()
 
     while True:
         try:
-            user_input = input("[You] : ")
+            user_input = input(f"{BOLD}You{RESET}  ")
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -195,12 +307,24 @@ def run_interactive(agent, initial_message: str = "") -> None:
             handle_fork(agent, command)
             continue
 
-        msg = expand_command(agent.prompt_loader, command)
+        # ── 多行输入检测 ──
+        if "\n" in command:
+            # 粘贴的多行文本，直接使用
+            msg = expand_command(agent.prompt_loader, command)
+        elif command.endswith("\\"):
+            # 续行符：读取多行
+            full = read_multiline(command.rstrip("\\"))
+            msg = expand_command(agent.prompt_loader, full)
+        else:
+            msg = expand_command(agent.prompt_loader, command)
 
-        print("[Assistant] : ", end="", flush=True)
-        for chunk in agent.process(msg):
-            output_chunk(chunk)
+        try:
+            for chunk in agent.process(msg):
+                handler.write(chunk)
+        except Exception as e:
+            print(f"\n  {RED}Error: {e}{RESET}")
         print("\n")
+        handler.reset()
 
     shutdown(agent)
 
