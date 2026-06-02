@@ -103,7 +103,7 @@ agent.py                          ← CLI 入口（交互/print 模式 + @文件
 **内部组件**（独立文件）：
 - **SystemPrompt** (`system_prompt.py`): 持有静态上下文引用，`build(compaction_data)` 实时查询 memory 动态部分
 - **CompactionService** (`compaction.py`): 编排完整压缩流程（提取 → 分发 → 树压缩 → 重建提示词）
-- **`_build_registry()`** (模块级函数): 构建 Agent 和子代理的工具注册表
+- **`build_default_registry()`** (`tools/registry.py`): 构建 Agent 和子代理的工具注册表
 
 ### SessionTree（`agent/core/session_tree.py`）
 **树状会话结构**，替代线性列表：
@@ -244,7 +244,7 @@ agent/.memory/
 
 ## 扩展点
 
-1. **新工具**: 在 `agent/tools/` 下创建新 py 文件，用 `@tool` 装饰器，在 `_build_registry()` 中注册
+1. **新工具**: 在 `agent/tools/` 下创建新 py 文件，用 `@tool` 装饰器，在 `build_default_registry()` 中注册
 2. **新子代理**: 在 `agent/subagent/` 下创建 .md 文件（YAML frontmatter + Markdown body）
 3. **新命令模板**: 在 `agent/prompts/` 下创建 .md 文件
 4. **新事件监听器**: 在 `Agent._setup_events()` 中注册

@@ -1,4 +1,4 @@
-from .registry import ToolRegistry
+from .registry import ToolRegistry, build_default_registry
 from .bash import BashTool
 from .file_edit import FileEditTool
 from .file_read import FileReadTool
@@ -11,6 +11,7 @@ from .subagent import SubagentTool
 
 __all__ = [
     "ToolRegistry",
+    "build_default_registry",
     "BashTool",
     "FileEditTool",
     "FileReadTool",

@@ -23,49 +23,11 @@ from .tracker import TokenTracker
 from ..ai.llm import LLMClient
 from .runner import AgentRunner
 from .events import EventBus
-from ..tools import (
-    ToolRegistry, BashTool, FileReadTool, FileWriteTool, FileEditTool,
-    WebFetchTool, WebSearchTool, SkillTool, SkillsLoader, TodoWriteTool, SubagentTool,
-)
+from ..tools import SkillsLoader
 from ..tools.executor import ToolExecutor
 from ..tools.subagent import AgentLoader
+from ..tools.registry import build_default_registry
 from .prompts import PromptLoader
-
-
-# ═══════════════════════════════════════════════════════════════
-# 工具注册表工厂
-# ═══════════════════════════════════════════════════════════════
-
-
-def _build_registry(
-    cfg: AppConfig,
-    skills: SkillsLoader,
-    client,
-    agent_loader: AgentLoader,
-    tracker: TokenTracker,
-) -> ToolRegistry:
-    """构建 Agent 的工具注册表（含子代理）。"""
-    registry = ToolRegistry()
-    for tool_cls in (BashTool, FileReadTool, FileWriteTool, FileEditTool,
-                     WebFetchTool, WebSearchTool, TodoWriteTool):
-        registry.register(tool_cls())
-    registry.register(SkillTool(skills))
-
-    sub = ToolRegistry()
-    for tool_cls in (BashTool, FileReadTool, FileWriteTool, FileEditTool,
-                     WebFetchTool, WebSearchTool, TodoWriteTool):
-        sub.register(tool_cls())
-
-    registry.register(SubagentTool(
-        client=client, model=cfg.model, registry=sub,
-        token_tracker=tracker, agent_loader=agent_loader,
-        system_prompt=(
-            "你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题。"
-            "由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。"
-        ),
-        max_turns=cfg.subagent_max_turns, sub_model=cfg.subagent_model,
-    ))
-    return registry
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -133,7 +95,7 @@ class Agent:
             print(f"[Agent] 已恢复会话（{len(non_sys)} 条上下文消息）", flush=True)
 
         # ── 工具注册 ──
-        registry = _build_registry(cfg, skills, client, agent_loader, self.tracker)
+        registry = build_default_registry(cfg, skills, client, agent_loader, self.tracker)
 
         # ── 运行器 ──
         self.runner = AgentRunner(

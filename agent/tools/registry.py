@@ -78,3 +78,60 @@ class ToolRegistry:
             return f"参数校验错误: {ve}{self._ERROR_HINT}"
         except Exception as e:
             return f"执行错误 {name}: {e}{self._ERROR_HINT}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 默认注册表工厂
+# ═══════════════════════════════════════════════════════════════
+
+_DEFAULT_SUBAGENT_PROMPT = (
+    "你是一个专注于执行具体任务的子代理。请详细分析任务，使用工具解决问题。"
+    "由于你是作为工具被调用的，请务必在任务完成后给出清晰、完整的总结报告。"
+)
+
+_DEFAULT_TOOLS = None  # 延迟初始化，避免循环导入
+
+
+def build_default_registry(
+    cfg,           # AppConfig (避免循环导入，不标注类型)
+    skills,        # SkillsLoader
+    client,        # OpenAI client
+    agent_loader,  # AgentLoader
+    tracker,       # TokenTracker
+) -> ToolRegistry:
+    """构建 Agent 的默认工具注册表（含子代理）。
+
+    包含: Bash, FileRead, FileWrite, FileEdit, WebFetch, WebSearch,
+          TodoWrite, SkillTool, SubagentTool。
+    """
+    from .bash import BashTool
+    from .file_read import FileReadTool
+    from .file_write import FileWriteTool
+    from .file_edit import FileEditTool
+    from .web_fetch import WebFetchTool
+    from .web_search import WebSearchTool
+    from .todo import TodoWriteTool
+    from .skill import SkillTool
+    from .subagent import SubagentTool
+
+    global _DEFAULT_TOOLS
+    if _DEFAULT_TOOLS is None:
+        _DEFAULT_TOOLS = (BashTool, FileReadTool, FileWriteTool, FileEditTool,
+                          WebFetchTool, WebSearchTool, TodoWriteTool)
+
+    registry = ToolRegistry()
+    for tool_cls in _DEFAULT_TOOLS:
+        registry.register(tool_cls())
+    registry.register(SkillTool(skills))
+
+    sub = ToolRegistry()
+    for tool_cls in _DEFAULT_TOOLS:
+        sub.register(tool_cls())
+
+    registry.register(SubagentTool(
+        client=client, model=cfg.model, registry=sub,
+        token_tracker=tracker, agent_loader=agent_loader,
+        system_prompt=_DEFAULT_SUBAGENT_PROMPT,
+        max_turns=cfg.subagent_max_turns, sub_model=cfg.subagent_model,
+    ))
+    return registry
