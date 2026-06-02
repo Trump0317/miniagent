@@ -138,15 +138,7 @@ class AgentMemory:
 
         self._session_dir.mkdir(parents=True, exist_ok=True)
 
-        row: dict[str, Any] = {
-            "id": entry.id,
-            "parent_id": entry.parent_id,
-            "type": entry.type,
-            "role": msg.get("role", ""),
-            "content": msg.get("content"),
-            "metadata": self._extract_metadata(msg),
-            "timestamp": entry.timestamp,
-        }
+        row = self._entry_to_row(entry)
         with self.history_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -206,6 +198,16 @@ class AgentMemory:
         if not entry:
             return
 
+        f.write(json.dumps(self._entry_to_row(entry), ensure_ascii=False) + "\n")
+
+        for child in self._tree.children_of(entry.id):
+            self._write_subtree(child.id, f)
+
+    # ── 序列化辅助 ──
+
+    @staticmethod
+    def _entry_to_row(entry: SessionEntry) -> dict[str, Any]:
+        """将 SessionEntry 序列化为 JSONL 行格式。"""
         row: dict[str, Any] = {
             "id": entry.id,
             "parent_id": entry.parent_id,
@@ -220,11 +222,7 @@ class AgentMemory:
         else:
             row["content"] = entry.content
             row["metadata"] = entry.metadata
-
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-        for child in self._tree.children_of(entry.id):
-            self._write_subtree(child.id, f)
+        return row
 
     # ── 树恢复（启动时从 JSONL 重建）──
 
