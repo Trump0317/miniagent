@@ -19,6 +19,7 @@ cp .env.example .env
 # 3. 启动（新会话）
 ./run.sh                               # CLI 交互模式
 ./run.sh -p "你好"                     # CLI 单次模式
+./run.sh --tui                         # TUI 终端界面模式
 python -m agent.web.server             # Web UI 模式 → http://127.0.0.1:8000
 
 # 恢复最近会话
@@ -35,6 +36,11 @@ agent/
 │   ├── config.py       #   多 Provider 配置 + 会话隔离
 │   ├── llm.py          #   LLM 客户端封装
 │   └── context.py      #   项目上下文文件加载
+├── cli/                # CLI 外壳（交互/print 模式）
+│   ├── app.py          #   CLI 应用程序（readline、智能输出缓冲、多行输入）
+│   └── helpers.py      #   handle_tree / handle_fork / handle_back
+├── tui/                # TUI 终端界面（prompt_toolkit, 对齐 pi-tui 风格）
+│   └── app.py          #   对话气泡、流式输出、鼠标滚轮翻页、折叠展开
 ├── core/               # 核心引擎（Agent 装配 + 运行器 + 存储）
 │   ├── agent.py        #   Agent 核心（纯装配层，~130 行）
 │   ├── runner.py       #   执行引擎（LLM think-act 迭代，产出统一 chunk 格式）
@@ -45,7 +51,7 @@ agent/
 │   ├── memory.py       #   纯存储层（树为唯一数据源 + 三层记忆）
 │   ├── tracker.py      #   Token 消耗统计
 │   ├── prompts.py      #   Prompt 模板加载器
-│   └── cli_helpers.py  #   CLI 辅助（handle_tree/fork/back）
+│   └── chunks.py       #   ChunkType 枚举 + 工厂函数（TEXT/REASONING/TOOL_STATUS/TOOL_RESULT/DONE）
 ├── tools/              # 工具集（扁平布局，每个工具一个文件）
 │   ├── base.py         #   工具基类 + Schema 瘦身（保留 anyOf+default）
 │   ├── registry.py     #   工具注册表
@@ -70,7 +76,7 @@ agent/
 │   ├── session.py      #   多会话管理
 │   └── static/
 │       └── index.html  #   聊天界面（Markdown 渲染、分支树）
-└── tests/              # 单元测试（473 个，覆盖核心和工具层）
+└── tests/              # 单元测试（503 个，覆盖核心和工具层）
     ├── test_events.py
     ├── test_session_tree.py
     ├── test_memory.py
@@ -90,7 +96,8 @@ agent/
     ├── test_executor.py
     ├── test_web_fetch.py
     ├── test_web_search.py
-    └── test_subagent.py
+    ├── test_subagent.py
+    └── test_tui.py
 ```
 
 **设计原则：**
@@ -98,7 +105,7 @@ agent/
 - **无列表双写** — `AgentMemory` 以树为唯一数据源，`history` 是 `tree.build_context()` 的实时计算
 - **事件驱动** — EventBus 解耦各组件
 - **扁平工具** — 每个工具一个 py 文件
-- **统一 chunk** — Agent 产出 `{"type":"text/tool_status/done"}` 格式，CLI/Web 共用
+- **统一 chunk** — Agent 产出 `{"type":"text/reasoning/tool_status/tool_result/done"}` 格式，CLI/TUI/Web 共用
 
 ## 功能清单
 
@@ -110,6 +117,11 @@ agent/
 | | 事件驱动 | EventBus 发布/订阅，组件完全解耦 |
 | **CLI** | 命令历史 | readline，↑↓回溯，退出持久化 |
 | | 内置命令 | /help /session /clear /tree /fork /back |
+| | 智能输出 | 思考内容灰色斜体 + 标签，工具输出缩进着色，多行输入支持 |
+| **TUI** | 对话界面 | prompt_toolkit，对话气泡，pi-tui 风格配色 |
+| | 滚动 | 鼠标滚轮 + PageUp/PageDown 翻页，自动跟底 |
+| | 折叠 | Ctrl+O 折叠/展开工具结果和思考内容 |
+| | 快捷键 | Ctrl+G 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 树、Esc 退出树 |
 | **Web** | 流式对话 | FastAPI + WebSocket，实时推送 |
 | | 多会话 | 新建/切换/删除，历史从后端加载 |
 | | 分支树 | 可视化 + fork/back 操作 |
@@ -157,6 +169,18 @@ agent/
 [You]: /tree           # 查看分支树
 [You]: /fork 2         # 分叉到第 2 条用户消息之前
 [You]: /back           # 返回分叉前
+```
+
+### TUI
+```
+# 启动 TUI 模式
+python agent.py --tui
+
+# 快捷键:
+#   Ctrl+G  退出          Ctrl+F  分叉
+#   Ctrl+B  返回          Ctrl+T  分支树
+#   Ctrl+O  展开/折叠      Esc    退出树视图
+#   PageUp/PageDown/滚轮  翻页回看
 ```
 
 ### Web UI

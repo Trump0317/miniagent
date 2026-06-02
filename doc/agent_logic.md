@@ -23,6 +23,11 @@ agent.py                    ← CLI 入口（交互 / print 模式 + 内置命�
 ├── agent/
 │   ├── system_prompt.md   ← 系统提示词模板（外部文件，可独立修改）
 │   ├── ai/                 # AI 层 — Provider 配置 + LLM 调用 + 上下文加载
+│   ├── cli/                # CLI 外壳 — 交互/print 模式
+│   │   ├── app.py          #   应用程序（readline、OutputHandler 智能输出、多行输入）
+│   │   └── helpers.py      #   handle_tree / handle_fork / handle_back
+│   ├── tui/                # TUI 终端界面 — prompt_toolkit, pi-tui 风格
+│   │   └── app.py          #   对话气泡、流式输出、鼠标滚轮翻页、折叠展开
 │   │   ├── config.py       #   AppConfig: 多 Provider 配置 + 会话隔离
 │   │   ├── llm.py          #   LLMClient: 流式调用封装
 │   │   └── context.py      #   load_context_files: AGENTS.md 加载
@@ -57,7 +62,7 @@ agent.py                    ← CLI 入口（交互 / print 模式 + 内置命�
 │   │   ├── session.py      #   SessionManager 多会话管理
 │   │   └── static/
 │   │       └── index.html  #   聊天界面
-│   └── tests/              # 473 个单元测试
+│   └── tests/              # 503 个单元测试
 ```
 
 ### 设计原则
@@ -67,7 +72,7 @@ agent.py                    ← CLI 入口（交互 / print 模式 + 内置命�
 3. **事件驱动** — EventBus 解耦各组件，通过 `turn:start` / `context:high` / `tool:before` / `tool:after` 等事件通信
 4. **存储与压缩分离** — AgentMemory 只做纯 I/O + 树操作，CompactionService 编排全部压缩流程
 5. **扁平工具** — 每个工具一个 .py 文件
-6. **统一 chunk** — Agent 产出 `{"type":"text/tool_status/done"}` 格式，CLI/Web 按类型消费
+6. **统一 chunk** — Agent 产出 `{"type":"text/reasoning/tool_status/tool_result/done"}` 格式，CLI/TUI/Web 按类型消费
 
 ---
 
@@ -101,8 +106,10 @@ agent.py                    ← CLI 入口（交互 / print 模式 + 内置命�
 执行 think-act 循环，产出统一 chunk 格式：
 
 ```python
-{"type": "text", "content": "..."}        # LLM 正文 / 工具实时输出
+{"type": "text", "content": "..."}        # LLM 正文
+{"type": "reasoning", "content": "..."}   # 推理/思考内容（DeepSeek thinking）
 {"type": "tool_status", "content": "..."}  # 工具执行状态
+{"type": "tool_result", "id": "...", "result": "..."}  # 工具最终结果
 {"type": "done"}                           # 本轮结束
 ```
 
@@ -253,7 +260,7 @@ agent/.memory/
 
 ---
 
-## 8. Web UI
+## 9. Web UI
 
 基于 FastAPI + WebSocket 的浏览器端交互界面。
 
@@ -309,13 +316,13 @@ python -m agent.web.server
 
 ---
 
-## 9. 测试
+## 11. 测试
 
 测试采用先单元后集成的策略，每个模块经过三重审查（自审 → Subagent 审 → 人工审）后提交。
 
 ### 覆盖状况
 
-截至 2026-05-30，已覆盖 **20 个模块，共 473 个单元测试**：
+截至 2026-05-30，已覆盖 **20 个模块，共 503 个单元测试**：
 
 | 模块 | 测试文件 | 测试数 |
 |------|----------|--------|
