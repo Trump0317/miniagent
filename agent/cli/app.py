@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+from ..core.chunks import ChunkType
+
 # ── readline: 命令历史和行编辑 ──
 try:
     import readline
@@ -72,7 +74,7 @@ def expand_command(prompt_loader, user_input: str) -> str:
 def output_chunk(chunk: dict) -> None:
     """将结构化 chunk 输出到终端。"""
     t = chunk.get("type", "")
-    if t in ("text", "tool_status"):
+    if t in (ChunkType.TEXT, ChunkType.TOOL_STATUS):
         print(chunk.get("content", ""), end="", flush=True)
 
 

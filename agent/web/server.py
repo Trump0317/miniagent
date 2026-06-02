@@ -15,6 +15,8 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
+from agent.core.chunks import done_chunk
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -179,7 +181,7 @@ async def ws_endpoint(ws: WebSocket):
                 while True:
                     chunk = await asyncio.to_thread(chunk_queue.get)
                     if chunk is None:
-                        await ws.send_json({"type": "done"})
+                        await ws.send_json(done_chunk())
                         break
                     await ws.send_json(chunk)
 

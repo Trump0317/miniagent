@@ -1,15 +1,14 @@
 """工具执行器 —— 串行/并行工具调度，钩子集成，结果截断。
 
-产出统一 chunk 格式:
-    {"type": "text", "content": "..."}      — 工具实时输出
-    {"type": "tool_status", "content": "..."} — 工具执行状态（串行/并行提示）
-    {"type": "tool_result", "id": "...", "result": "..."} — 工具最终结果
+产出统一 chunk 格式（见 agent/core/chunks.py）。
 """
 
 from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Generator, TYPE_CHECKING
+
+from ..core.chunks import text_chunk, tool_status_chunk, tool_result_chunk
 
 if TYPE_CHECKING:
     from ..core.events import EventBus
@@ -55,17 +54,16 @@ class ToolExecutor:
                 if self.registry.get_tool(tc["function"]["name"])
                 and not self.registry.get_tool(tc["function"]["name"]).parallel_safe
             ]
-            yield {
-                "type": "tool_status",
-                "content": f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n",
-            }
+            yield tool_status_chunk(
+                f"\n[串行执行 {count} 个工具 (含非并发安全: {', '.join(unsafe_names)})...]\n"
+            )
             yield from self._serial(tool_calls)
 
     def _serial(self, tool_calls: list[dict]):
         for tc in tool_calls:
             name = tc["function"]["name"]
             args = self._parse_args(tc)
-            yield {"type": "tool_status", "content": f"\n[执行工具: {name}...]\n"}
+            yield tool_status_chunk(f"\n[执行工具: {name}...]\n")
 
             # before 事件
             blocked_result: str | None = None
@@ -77,7 +75,7 @@ class ToolExecutor:
                         break
 
             if blocked_result:
-                yield {"type": "tool_result", "id": tc["id"], "result": self._truncate(blocked_result)}
+                yield tool_result_chunk(tc["id"], self._truncate(blocked_result))
                 continue
 
             # 流式执行工具，逐块产出
@@ -85,7 +83,7 @@ class ToolExecutor:
             for chunk in self._run_one(name, args):
                 if chunk:
                     chunks.append(str(chunk))
-                    yield {"type": "text", "content": str(chunk)}
+                    yield text_chunk(str(chunk))
 
             result = "".join(chunks)
 
@@ -96,12 +94,12 @@ class ToolExecutor:
                     if isinstance(resp, str):
                         result = resp
 
-            yield {"type": "tool_result", "id": tc["id"], "result": self._truncate(result)}
+            yield tool_result_chunk(tc["id"], self._truncate(result))
 
     def _parallel(self, tool_calls: list[dict]):
         count = len(tool_calls)
         workers = min(count, MAX_PARALLEL_TOOLS)
-        yield {"type": "tool_status", "content": f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n"}
+        yield tool_status_chunk(f"\n[并行执行 {count} 个工具 (最多 {workers} 并发)...]\n")
 
         results: dict[str, str] = {}
 
@@ -134,12 +132,12 @@ class ToolExecutor:
             for future in as_completed(futures):
                 tc_id, name, raw = future.result()
                 results[tc_id] = self._truncate(raw)
-                yield {"type": "tool_status", "content": f"[{name}] ✓\n"}
+                yield tool_status_chunk(f"[{name}] ✓\n")
 
         for tc in tool_calls:
             tc_id = tc["id"]
             if tc_id in results:
-                yield {"type": "tool_result", "id": tc_id, "result": results[tc_id]}
+                yield tool_result_chunk(tc_id, results[tc_id])
 
     def _run_one(self, name: str, args: dict):
         """生成器: 逐块产出工具输出。"""

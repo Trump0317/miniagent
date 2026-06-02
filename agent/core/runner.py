@@ -1,15 +1,13 @@
 """Agent 执行引擎 —— think-act 循环编排。
 
-产出统一 chunk 格式:
-    {"type": "text", "content": "..."}       — LLM 正文 / 工具输出
-    {"type": "tool_status", "content": "..."} — 工具执行状态
-    {"type": "tool_result", "id": ..., "result": ...} — 工具最终结果
-    {"type": "done"}                          — 本轮结束
+产出统一 chunk 格式（见 agent/core/chunks.py）。
 """
 
 from __future__ import annotations
 from types import SimpleNamespace
 from typing import Generator, TYPE_CHECKING
+
+from .chunks import text_chunk, tool_status_chunk, done_chunk, ChunkType
 
 if TYPE_CHECKING:
     from .tracker import TokenTracker
@@ -38,11 +36,10 @@ class AgentRunner:
         turns = 0
         while True:
             if self.max_turns is not None and turns >= self.max_turns:
-                yield {
-                    "type": "tool_status",
-                    "content": f"\n[达到最大轮数 {self.max_turns}，已熔断]\n",
-                }
-                yield {"type": "done"}
+                yield tool_status_chunk(
+                    f"\n[达到最大轮数 {self.max_turns}，已熔断]\n"
+                )
+                yield done_chunk()
                 break
 
             tool_schemas = self.tools.registry.get_tool_schemas()
@@ -63,7 +60,7 @@ class AgentRunner:
                     full_reasoning += chunk["text"]
                 elif t == "content":
                     full_content += chunk["text"]
-                    yield {"type": "text", "content": chunk["text"]}
+                    yield text_chunk(chunk["text"])
                 elif t == "tool_call":
                     idx = chunk["index"]
                     if idx not in tool_calls_accum:
@@ -95,13 +92,13 @@ class AgentRunner:
             if not tool_calls_accum:
                 if self.bus:
                     self.bus.emit("turn:end", {"text": full_content})
-                yield {"type": "done"}
+                yield done_chunk()
                 return
 
             # ── 4. 执行工具 ──
             tool_results: dict[str, str] = {}
             for item in self.tools.execute(assistant_msg["tool_calls"]):
-                if item.get("type") == "tool_result":
+                if item.get("type") == ChunkType.TOOL_RESULT:
                     tool_results[item["id"]] = item["result"]
                 yield item
 
