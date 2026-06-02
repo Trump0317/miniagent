@@ -69,9 +69,6 @@ class CompactionService:
         self._prompt = prompt
         self._keep_recent = int(max_context * self._KEEP_RECENT_RATIO)
 
-        # 最近一次 LLM 提取的 token 用量（供日志使用）
-        self._last_usage: dict[str, int] = {}
-
     # ── 公共 API ──
 
     def should_compact(self) -> bool:
@@ -92,7 +89,7 @@ class CompactionService:
         orig_len = len(entries)
 
         # ── 步骤 2: LLM 提取（原 Compactor 逻辑）──
-        data = self._extract(messages_to_summarize)
+        data, usage = self._extract(messages_to_summarize)
 
         # ── 步骤 3: 分发到三层记忆 ──
         new_facts = self._dispatch_to_memory(data)
@@ -106,7 +103,7 @@ class CompactionService:
         new_prompt = self._prompt.build(data)
 
         # ── 步骤 6: 日志 ──
-        self._log(orig_len, new_facts, data)
+        self._log(orig_len, new_facts, data, usage)
 
         return new_prompt, data
 
@@ -159,18 +156,16 @@ class CompactionService:
 
     # ── 内部：LLM 提取 ──
 
-    def _extract(self, history: list[dict]) -> dict[str, Any]:
+    def _extract(self, history: list[dict]) -> tuple[dict[str, Any], dict[str, int]]:
         """调用 LLM 从对话历史中提取摘要、偏好和事实。
 
-        如果树中已有之前的压缩节点，将其摘要作为迭代上下文传入，
-        让 LLM 在已有基础上增量更新，而非每次从头提取。
+        返回 (data, usage)。
         """
         effective = [m for m in history if m.get("role") != "system"]
         if len(effective) < 2:
-            return {"summary": {}, "preferences": [], "facts": []}
+            return {"summary": {}, "preferences": [], "facts": []}, {}
 
         recent = effective[-self._COMPACT_K:]
-        self._last_usage = {}
 
         # ── 迭代压缩：获取上一次压缩摘要作为上下文 ──
         previous = self._get_previous_summary()
@@ -185,6 +180,7 @@ class CompactionService:
             )
         user_parts.append(self._format_messages(recent))
 
+        usage: dict[str, int] = {}
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
@@ -195,7 +191,7 @@ class CompactionService:
                 response_format={"type": "json_object"},
             )
             if hasattr(response, "usage") and response.usage:
-                self._last_usage = {
+                usage = {
                     "input": getattr(response.usage, "prompt_tokens", 0) or 0,
                     "output": getattr(response.usage, "completion_tokens", 0) or 0,
                 }
@@ -206,9 +202,9 @@ class CompactionService:
                 "summary": {"critical": f"提取失败: {e}", "decision": "无", "issue": "无"},
                 "preferences": [],
                 "facts": [],
-            }
+            }, usage
 
-        return self._normalize(data)
+        return self._normalize(data), usage
 
     def _get_previous_summary(self) -> str | None:
         """从当前树路径中获取最近一次压缩节点的摘要。
@@ -305,7 +301,7 @@ class CompactionService:
 
     # ── 内部：日志 ──
 
-    def _log(self, orig_len: int, new_facts: int, data: dict) -> None:
+    def _log(self, orig_len: int, new_facts: int, data: dict, usage: dict[str, int]) -> None:
         """统一日志输出。"""
         summary = data.get("summary", {})
         facts = data.get("facts", [])
@@ -315,14 +311,15 @@ class CompactionService:
         )
 
         if not has_content:
+            if usage:
+                print(f"[Memory] 压缩消耗 {usage.get('input', 0)}+{usage.get('output', 0)} tokens", flush=True)
             return
 
         new_len = len(self._memory.history)
         parts = [f"[Memory] 树压缩: {orig_len} 条 → {new_len} 条"]
         if facts:
             parts.append(f"(新增 {len(facts)} 条事实)")
-        if self._last_usage:
-            u = self._last_usage
-            parts.append(f"| 压缩消耗 {u.get('input', 0)}+{u.get('output', 0)} tokens")
+        if usage:
+            parts.append(f"| 压缩消耗 {usage.get('input', 0)}+{usage.get('output', 0)} tokens")
 
         print(" ".join(parts), flush=True)
