@@ -17,12 +17,12 @@ if TYPE_CHECKING:
 class SystemPrompt:
     """构建完整系统提示词。
 
-    模板文件: agent/system_prompt.md
+    模板文件: agent/core/system_prompt.md
     build() 时实时注入 memory 的动态内容（brief_context / user_preferences），
     保证每次调用都反映最新的三层记忆状态。
     """
 
-    _TEMPLATE_PATH = Path(__file__).parent.parent / "system_prompt.md"
+    _TEMPLATE_PATH = Path(__file__).parent / "system_prompt.md"
 
     def __init__(
         self,

@@ -109,7 +109,7 @@ class Agent:
             prompt_loader=self.prompt_loader,
             memory=self.memory,
         )
-        # 暴露给 cli_helpers（fork 时需要 skills/agent_loader 重建提示词）
+        # 暴露给 cli/helpers（fork 时需要 skills/agent_loader 重建提示词）
         self._skills = skills
         self._agent_loader = agent_loader
 

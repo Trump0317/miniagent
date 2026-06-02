@@ -165,15 +165,15 @@ def _run_interactive(agent, initial_message: str = "") -> None:
             _print_session_info(agent)
             continue
         if command.startswith("/tree"):
-            from agent.core.cli_helpers import handle_tree
+            from agent.cli.helpers import handle_tree
             handle_tree(agent)
             continue
         if command.startswith("/back"):
-            from agent.core.cli_helpers import handle_back
+            from agent.cli.helpers import handle_back
             handle_back(agent)
             continue
         if command.startswith("/fork"):
-            from agent.core.cli_helpers import handle_fork
+            from agent.cli.helpers import handle_fork
             handle_fork(agent, command)
             continue
 
