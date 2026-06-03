@@ -23,6 +23,7 @@ from .tracker import TokenTracker
 from ..ai.llm import LLMClient
 from .runner import AgentRunner
 from .events import EventBus
+from .observability import Observability
 from ..tools import SkillsLoader
 from ..tools.executor import ToolExecutor
 from ..tools.subagent import AgentLoader
@@ -119,6 +120,10 @@ class Agent:
         # ── 事件 ──
         self._setup_events()
 
+        # ── 可观测性 ──
+        self._obs = Observability(log_dir=cfg.session_dir)
+        self._obs.attach(self.bus)
+
     # ── 公共 API ──
 
     def process(self, message: str) -> Generator[str, None, None]:
@@ -140,7 +145,8 @@ class Agent:
         stats = self.tracker.stats_by_model()
         self._system_prompt, compact_result = self._compaction.compact()
         self._mcp.shutdown()
-        return {"token_stats": stats, "compact": compact_result}
+        return {"token_stats": stats, "compact": compact_result,
+                "observability": self._obs.summary()}
 
     # ── 公共配置方法 ──
 
