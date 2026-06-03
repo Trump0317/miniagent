@@ -4,63 +4,126 @@
 """
 
 from __future__ import annotations
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..core.agent import Agent
 
 
-def handle_tree(agent: Agent) -> None:
-    """显示会话分支树。"""
-    entries = agent.memory.get_tree_entries()
-    if not entries:
-        print("(空会话)")
-        return
+# ═══════════════════════════════════════════════════════════════
+# 树视图共用辅助
+# ═══════════════════════════════════════════════════════════════
 
-    # id → 序号（只给 user 消息编号）
-    sorted_entries = sorted(entries, key=lambda e: e.timestamp)
-    id_to_num: dict[str, int] = {}
-    user_count = 0
-    for e in sorted_entries:
-        if e.role == "user":
-            user_count += 1
-            id_to_num[e.id] = user_count
+def format_tool_entry(tree, entry) -> str:
+    """将工具条目格式化为 [toolname: arg_summary] 形式。"""
+    tool_name = "tool"
+    arg_summary = ""
 
-    leaf_id = agent.memory.leaf_id
+    parent = tree.get(entry.parent_id) if entry.parent_id else None
+    if parent and parent.role == "assistant" and parent.metadata.get("tool_calls"):
+        tool_call_id = entry.metadata.get("tool_call_id")
+        for tc in parent.metadata["tool_calls"]:
+            if tc.get("id") == tool_call_id:
+                tool_name = tc.get("function", {}).get("name", "tool")
+                try:
+                    args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                    for key in ("file_path", "path", "command", "query", "url", "content"):
+                        if key in args and args[key]:
+                            arg_summary = str(args[key])[:60].replace("\n", " ")
+                            break
+                    if not arg_summary and args:
+                        first_val = next(iter(args.values()), "")
+                        arg_summary = str(first_val)[:60].replace("\n", " ")
+                except (json.JSONDecodeError, StopIteration, TypeError):
+                    pass
+                break
 
-    def _print_tree(entry_id: str, prefix: str, depth: int) -> None:
-        if depth > 40:
-            print(f"{prefix}... (超过深度限制)")
-            return
+    if arg_summary:
+        return f"[{tool_name}: {arg_summary}]"
+    return f"[{tool_name}]"
 
-        entry = agent.memory.tree.get(entry_id)
+
+def format_tree_entry(tree, entry, on_path: bool) -> str:
+    """格式化单个树节点为一行显示文本。"""
+    if entry.type == "compaction":
+        return "[c] " + ((entry.summary or "")[:40].replace("\n", " "))
+    if entry.role == "tool":
+        return format_tool_entry(tree, entry)
+    content = (entry.content or "")[:60].replace("\n", " ")
+    bullet = "• " if on_path else "  "
+    return f"{bullet}{entry.role}: {content}"
+
+
+def render_tree_text(tree, leaf_id: str | None) -> str:
+    """渲染会话树为 pi 风格的文本。
+
+    主干路径扁平化（所有主干节点同缩进），分支处用 ├⊟/└⊟ 展开。
+    """
+    if not tree.root_id:
+        return "(empty session)"
+
+    # 构建叶子路径集合
+    leaf_path_ids: set[str] = set()
+    if leaf_id:
+        node = tree.get(leaf_id)
+        while node:
+            leaf_path_ids.add(node.id)
+            node = tree.get(node.parent_id) if node.parent_id else None
+
+    lines: list[str] = []
+    MAIN = "     "
+    LEAF_MARKER = "› "
+
+    def _render_subtree(eid: str, indent: str) -> None:
+        """渲染一棵子树。同层节点共享 indent；分支时子节点用连接符+延续缩进。"""
+        entry = tree.get(eid)
         if not entry:
             return
 
-        marker = " ← 当前" if entry_id == leaf_id else ""
-
-        if entry.type == "compaction":
-            summary = (entry.summary or "")[:50].replace("\n", " ")
-            print(f"{prefix}[压缩] {summary}{marker}")
-        elif entry.role == "tool":
-            # 工具结果内容太长，只显示标记
-            print(f"{prefix}[tool] ✓{marker}")
+        children = tree.children_of(eid)
+        on_path = eid in leaf_path_ids
+        marker = LEAF_MARKER if eid == leaf_id else ""
+        content = format_tree_entry(tree, entry, on_path)
+        # off-path 节点在子树中不需要 bullet 占位
+        if not on_path and content.startswith("  "):
+            content = content[2:]
+        # leaf 标记替换缩进前两字符
+        if marker:
+            display_indent = marker + indent[2:]
         else:
-            num = id_to_num.get(entry.id)
-            num_str = f"[{num}] " if num else ""
-            content = (entry.content or "")[:50].replace("\n", " ")
-            print(f"{prefix}{num_str}{entry.role}: {content}{marker}")
+            display_indent = indent
+        lines.append(f"{display_indent}{content}")
 
-        children = agent.memory.tree.children_of(entry_id)
-        for i, child in enumerate(children):
-            is_last = i == len(children) - 1
-            connector = "└── " if is_last else "├── "
-            child_prefix = prefix + ("    " if is_last else "│   ")
-            print(f"{prefix}{connector}")
-            _print_tree(child.id, child_prefix, depth + 1)
+        if len(children) > 1:
+            # 多个子节点 → 使用连接符展开
+            for i, child in enumerate(children):
+                is_last = i == len(children) - 1
+                conn = "└⊟ " if is_last else "├⊟ "
+                child_on_path = child.id in leaf_path_ids
+                child_content = format_tree_entry(tree, child, child_on_path)
+                # off-path 节点：连接符取代 bullet 前缀
+                if not child_on_path and child_content.startswith("  "):
+                    child_content = child_content[2:]
+                lines.append(f"{indent}{conn}{child_content}")
 
-    if agent.memory.tree.root_id:
-        _print_tree(agent.memory.tree.root_id, "", 0)
+                child_cont = indent + ("      " if is_last else "│     ")
+                for gc in tree.children_of(child.id):
+                    _render_subtree(gc.id, child_cont)
+        elif len(children) == 1:
+            _render_subtree(children[0].id, indent)
+
+    _render_subtree(tree.root_id, MAIN)
+    return "\n".join(lines)
+
+
+def handle_tree(agent: Agent) -> None:
+    """显示会话分支树。"""
+    tree = agent.memory.tree
+    if not tree.root_id:
+        print("(空会话)")
+        return
+    print(render_tree_text(tree, agent.memory.leaf_id))
 
 
 def handle_back(agent: Agent) -> None:

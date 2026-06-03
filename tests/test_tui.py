@@ -129,7 +129,7 @@ class TestInputHandling(unittest.TestCase):
         app._app.invalidate = MagicMock()
         app._handle_input("/help")
         self.assertEqual(len(app._messages), 1)
-        self.assertIn("Ctrl+G", app._messages[0].content)
+        self.assertIn("Esc", app._messages[0].content)
 
 
 # ===========================================================

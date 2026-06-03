@@ -212,12 +212,8 @@ class AppConfig:
 
 | 键 | 功能 |
 |----|------|
-| Ctrl+Q | 退出 |
-| Ctrl+F | 分叉 |
-| Ctrl+B | 返回 |
-| Ctrl+T | 分支树 |
-| Ctrl+E | 展开/折叠工具 |
-| Esc | 退出树/清空输入 |
+| Esc | 退出 / 清空输入 |
+| 鼠标滚轮 | 滚动翻页 |
 
 ## Web UI
 
