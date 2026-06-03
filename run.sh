@@ -8,7 +8,7 @@ VENV="$ROOT/.venv"
 if [ ! -d "$VENV" ]; then
     echo "[miniagent] 创建虚拟环境..."
     python3 -m venv "$VENV"
-    "$VENV/bin/pip" install --quiet -r "$ROOT/requirements.txt"
+    "$VENV/bin/pip" install --quiet -e "$ROOT"
     echo "[miniagent] 环境初始化完成"
 fi
 
@@ -18,5 +18,4 @@ if [ ! -f "$ROOT/.env" ] && [ -f "$ROOT/.env.example" ]; then
     echo "[miniagent] .env 已从 .env.example 创建，请编辑填入 API Key"
 fi
 
-cd "$ROOT"
-exec "$VENV/bin/python" agent.py
+exec "$VENV/bin/miniagent" "$@"
