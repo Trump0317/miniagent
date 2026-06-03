@@ -14,7 +14,8 @@
 8. [LLM 重试](#8-llm-重试)
 9. [可观测性](#9-可观测性)
 10. [CLI / TUI / Web](#10-cli--tui--web)
-11. [测试](#11-测试)
+11. [包结构与安装](#11-包结构与安装)
+12. [测试](#12-测试)
 
 ---
 
@@ -311,7 +312,76 @@ API 端点：
 
 ---
 
-## 11. 测试
+## 11. 包结构与安装
+
+### pip 可安装包
+
+`pyproject.toml` 定义包元数据和入口点：
+
+```
+miniagent/
+├── pyproject.toml       ← 包配置：依赖、版本、入口点
+├── MANIFEST.in          ← 声明需打包的非 Python 文件
+├── requirements.txt     ← 兼容旧安装方式
+├── run.sh               ← 一键启动脚本
+├── agent/               ← 框架代码（随包安装到 site-packages）
+└── dist/                ← 构建产物（.whl + .tar.gz）
+```
+
+安装命令 `miniagent` 由 `[project.scripts]` 定义，指向 `agent:main` 函数。
+
+可选依赖分组：
+
+```bash
+pip install miniagent              # 核心
+pip install miniagent[web]         # + Web UI
+pip install miniagent[tui]         # + TUI
+pip install miniagent[mcp]         # + MCP
+pip install miniagent[all]         # 全部
+```
+
+### 框架 vs 用户数据分离
+
+| 类别 | 位置 | 来源 |
+|------|------|------|
+| 框架代码 | `site-packages/agent/` | 随 pip 安装 |
+| system_prompt.md | `site-packages/agent/core/` | 随 pip 安装 |
+| 子代理定义 | `site-packages/agent/subagent/` | 随 pip 安装 |
+| 命令模板 | `site-packages/agent/prompts/` | 随 pip 安装 |
+| Web 前端 | `site-packages/agent/web/static/` | 随 pip 安装 |
+| | | |
+| 会话历史 | `./.memory/` | 用户项目目录 |
+| Token 日志 | `./.memory/sessions/*/tokens.jsonl` | 用户项目目录 |
+| 可观测日志 | `./.memory/sessions/*/trace.jsonl` | 用户项目目录 |
+| skills/ | `./skills/` | 用户项目目录 |
+| mcp.json | `./mcp.json` | 用户项目目录 |
+| AGENTS.md | `./AGENTS.md` | 用户项目目录 |
+
+`AppConfig.root` 默认为 `Path.cwd()`，`memory_dir` 在 `root/.memory`。
+
+### 构建
+
+```bash
+pip install build
+python -m build
+# 产出 dist/miniagent-1.0.0-py3-none-any.whl
+#       dist/miniagent-1.0.0.tar.gz
+```
+
+### MANIFEST.in
+
+```ini
+include agent/core/system_prompt.md
+include agent/subagent/*.md
+include agent/prompts/*.md
+include agent/web/static/index.html
+```
+
+确保非 Python 文件被打包到 wheel 中。
+
+---
+
+## 12. 测试
 
 552 个测试，全绿。
 
