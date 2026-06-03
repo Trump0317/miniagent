@@ -225,11 +225,15 @@ async def ws_endpoint(ws: WebSocket):
 
     # 队列：agent.process() chunk → WS 推送
     chunk_queue: queue.Queue[str | None] = queue.Queue()
+    cancel_flag = threading.Event()
 
     def _run_agent(agent, message: str):
         """在线程中运行 agent.process()."""
         try:
             for chunk in agent.process(message):
+                if cancel_flag.is_set():
+                    chunk_queue.put(None)
+                    return
                 chunk_queue.put(chunk)
             chunk_queue.put(None)
         except Exception:
@@ -257,12 +261,18 @@ async def ws_endpoint(ws: WebSocket):
                         "model": agent.config.model,
                     })
 
+            elif msg_type == "cancel":
+                # 前端请求停止当前生成
+                cancel_flag.set()
+                await ws.send_json(done_chunk())
+
             elif msg_type == "message":
                 sid = data.get("session_id", "default")
                 content = data.get("content", "")
                 if not content:
                     continue
 
+                cancel_flag.clear()
                 agent = sessions.get_or_create_agent(sid)
 
                 t = threading.Thread(

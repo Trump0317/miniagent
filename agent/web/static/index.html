@@ -6,6 +6,8 @@
 <title>miniagent</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -70,6 +72,9 @@ body{font:14px/1.6 var(--font);background:var(--bg);color:var(--text);height:100
 #send:hover{background:var(--accent2);box-shadow:0 2px 16px var(--accent-glow)}
 #send:disabled{opacity:.35;cursor:default;box-shadow:none}
 #send svg{width:16px;height:16px}
+#stop-btn{padding:0 14px;background:var(--danger);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;transition:all var(--transition);display:none;align-items:center}
+#stop-btn:hover{background:#c44;box-shadow:0 2px 12px rgba(224,85,85,.3)}
+#stop-btn.visible{display:flex}
 /* ── 消息 ── */
 .msg-row{margin:16px 0;display:flex;gap:10px;animation:slideIn .3s ease-out}
 @keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -200,16 +205,31 @@ body{font:14px/1.6 var(--font);background:var(--bg);color:var(--text);height:100
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       发送
     </button>
+    <button id="stop-btn" onclick="stopGeneration()" title="停止生成">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+    </button>
   </div>
 </div>
 
 <script>
 window.addEventListener('DOMContentLoaded', () => {
   marked.setOptions({ breaks:true, gfm:true });
-  if (typeof hljs !== 'undefined') marked.setOptions({ highlight:(c,l) => hljs.highlight(l,c).value });
+  if (typeof hljs !== 'undefined') {
+    marked.setOptions({
+      highlight: (code, lang) => {
+        if (lang && hljs.getLanguage(lang)) {
+          try { return hljs.highlight(code, { language: lang }).value; } catch(e) {}
+        }
+        try { return hljs.highlightAuto(code).value; } catch(e) { return code; }
+      }
+    });
+  }
 });
 
-let ws = null, busy = false, currentSession = null;
+let ws = null, busy = false, currentSession = null, wsReconnectTimer = null;
+let wsReconnectAttempts = 0;
+const WS_MAX_RECONNECT = 10;
+const WS_BASE_DELAY = 1000;
 const msgBox = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -232,9 +252,127 @@ function toggleSidebar() {
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws');
-  ws.onopen = () => { statusEl.textContent = ''; loadSessions(); };
-  ws.onclose = () => { statusEl.textContent = '连接断开 · 刷新重连'; statusEl.className = ''; };
+  ws.onopen = () => {
+    statusEl.textContent = '';
+    wsReconnectAttempts = 0;
+    clearWsTimer();
+    loadSessions();
+  };
+  ws.onclose = () => {
+    if (wsReconnectAttempts < WS_MAX_RECONNECT) {
+      const delay = WS_BASE_DELAY * Math.pow(2, wsReconnectAttempts);
+      wsReconnectAttempts++;
+      statusEl.textContent = `连接断开 · ${Math.round(delay/1000)}s 后重连 (${wsReconnectAttempts}/${WS_MAX_RECONNECT})`;
+      statusEl.className = '';
+      clearWsTimer();
+      wsReconnectTimer = setTimeout(connect, delay);
+    } else {
+      statusEl.textContent = '连接断开 · 已达最大重连次数，请刷新页面';
+      statusEl.className = '';
+    }
+  };
   ws.onerror = () => { statusEl.textContent = '连接错误'; };
+  // 统一的消息处理器，不随 send() 覆盖
+  setupWsHandler();
+}
+
+function clearWsTimer() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+}
+
+// ── 统一的消息处理器 ──
+let _msgState = null; // { contentWrap, currentBubble, pendingOutputDiv, toolOutputLines, rawText }
+
+function setupWsHandler() {
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (!_msgState) return; // 非活跃状态忽略
+    const s = _msgState;
+    if (data.type === 'text') {
+      if (s.pendingOutputDiv) {
+        s.pendingOutputDiv.textContent += data.content;
+        s.toolOutputLines = s.pendingOutputDiv.textContent.split('\n').length;
+        msgBox.scrollTop = msgBox.scrollHeight;
+      } else {
+        s.rawText += data.content;
+        ensureBubble(s);
+        renderBubble(s);
+        msgBox.scrollTop = msgBox.scrollHeight;
+      }
+    } else if (data.type === 'reasoning') {
+      // 思维链内容：作为折叠的 thinking 块展示
+      if (!s._thinkingDiv) {
+        s._thinkingDiv = document.createElement('div');
+        s._thinkingDiv.className = 'tool-output open';
+        const label = document.createElement('div');
+        label.className = 'tool-line tool-running';
+        label.innerHTML = '<span class=icon>💭</span> Thinking...';
+        s.contentWrap.appendChild(label);
+        s.contentWrap.appendChild(s._thinkingDiv);
+      }
+      s._thinkingDiv.textContent += data.content;
+      msgBox.scrollTop = msgBox.scrollHeight;
+    } else if (data.type === 'tool_status') {
+      const isDone = data.content.includes('✓');
+      flushTool(s);
+      // 标记 thinking 结束（如果有）
+      if (s._thinkingDiv) {
+        const thinkingDiv = s._thinkingDiv;  // 捕获引用，避免闭包失效
+        const prevLabel = thinkingDiv.previousElementSibling;
+        if (prevLabel) {
+          prevLabel.className = 'tool-line tool-done';
+          prevLabel.innerHTML = '<span class=icon>💭</span> Thought';
+        }
+        const t = document.createElement('div');
+        t.className = 'tool-toggle';
+        const thinkLines = thinkingDiv.textContent.split('\n').length;
+        t.textContent = '▸ 思考内容 (' + thinkLines + ' 行)';
+        t.onclick = function() {
+          const open = thinkingDiv.classList.toggle('open');
+          this.textContent = (open ? '▾' : '▸') + ' 思考内容 (' + thinkLines + ' 行)';
+        };
+        s.contentWrap.appendChild(t);
+        thinkingDiv.classList.remove('open'); // 默认折叠
+        s._thinkingDiv = null;
+      }
+      const toolDiv = document.createElement('div');
+      toolDiv.className = 'tool-line ' + (isDone ? 'tool-done' : 'tool-running');
+      toolDiv.innerHTML = '<span class=icon>' + (isDone ? '✓' : '⚙') + '</span> ' + escapeHtml(data.content.trim());
+      s.contentWrap.appendChild(toolDiv);
+      if (!isDone) {
+        s.pendingOutputDiv = document.createElement('div');
+        s.pendingOutputDiv.className = 'tool-output open';
+        s.contentWrap.appendChild(s.pendingOutputDiv);
+      }
+      msgBox.scrollTop = msgBox.scrollHeight;
+    } else if (data.type === 'tool_result') {
+      // 工具最终结果（并行模式）：显示折叠输出
+      const result = data.result || '';
+      if (result) {
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'tool-output';
+        resultDiv.textContent = result;
+        s.contentWrap.appendChild(resultDiv);
+        const resultLines = result.split('\n').length;
+        const toggle = document.createElement('div');
+        toggle.className = 'tool-toggle';
+        toggle.textContent = '▸ 输出 (' + resultLines + ' 行)';
+        toggle.onclick = function() {
+          const open = resultDiv.classList.toggle('open');
+          this.textContent = (open ? '▾' : '▸') + ' 输出 (' + resultLines + ' 行)';
+        };
+        s.contentWrap.appendChild(toggle);
+        msgBox.scrollTop = msgBox.scrollHeight;
+      }
+    } else if (data.type === 'done') {
+      // 标记 thinking 结束
+      if (s._thinkingDiv) {
+        const prevLabel = s._thinkingDiv.previousElementSibling;
+        if (prevLabel) prevLabel.innerHTML = '<span class=icon>💭</span> Thought';
+      }
+      finishMessage(s);
+    }
+  };
 }
 
 // ── 会话 ──
@@ -301,7 +439,7 @@ async function loadHistory(sid) {
   try {
     const resp = await fetch('/api/sessions/' + sid + '/history');
     const messages = await resp.json();
-    if (landingVisible && messages.length > 0) { landing.remove(); landingVisible = false; }
+    if (landingVisible && messages.length > 0) { landing.style.display = 'none'; landingVisible = false; }
     msgBox.innerHTML = '';
     for (const m of messages) {
       if (m.role === 'user') {
@@ -331,15 +469,16 @@ async function send() {
   if (!text) return;
 
   busy = true; sendBtn.disabled = true;
-  input.value = ''; input.style.height = 'auto';
+  document.getElementById('stop-btn').classList.add('visible');
   statusEl.textContent = '思考中...'; statusEl.className = 'thinking';
+  input.value = ''; input.style.height = 'auto';
 
   // 解析 @引用
   if (text.includes('@')) text = await resolveAtRefs(text);
 
-  if (isCommand(text)) { busy = false; sendBtn.disabled = false; statusEl.textContent = ''; statusEl.className = ''; input.focus(); return; }
+  if (isCommand(text)) { busy = false; sendBtn.disabled = false; document.getElementById('stop-btn').classList.remove('visible'); statusEl.textContent = ''; statusEl.className = ''; input.focus(); return; }
 
-  if (landingVisible) { landing.remove(); landingVisible = false; }
+  if (landingVisible) { landing.style.display = 'none'; landingVisible = false; }
 
   // 用户消息
   const userRow = document.createElement('div');
@@ -354,81 +493,80 @@ async function send() {
   const contentWrap = assistantRow.children[1];
   msgBox.appendChild(assistantRow);
 
-  let currentBubble = null, pendingOutputDiv = null, toolOutputLines = 0;
-  let rawText = '';
-
-  function flushTool() {
-    if (pendingOutputDiv && toolOutputLines > 0) {
-      pendingOutputDiv.classList.add('open');
-      const t = document.createElement('div');
-      t.className = 'tool-toggle';
-      t.textContent = '▾ 工具输出 (' + toolOutputLines + ' 行)';
-      t.onclick = function() {
-        const open = pendingOutputDiv.classList.toggle('open');
-        this.textContent = (open ? '▾' : '▸') + ' 工具输出 (' + toolOutputLines + ' 行)';
-      };
-      contentWrap.appendChild(t);
-    }
-    pendingOutputDiv = null; toolOutputLines = 0;
-  }
-
-  function ensureBubble() {
-    if (!currentBubble) {
-      currentBubble = document.createElement('div');
-      currentBubble.className = 'bubble assistant';
-      contentWrap.appendChild(currentBubble);
-    }
-    return currentBubble;
-  }
-
-  function renderBubble() {
-    if (currentBubble) {
-      let html = md(rawText);
-      // 为 pre 添加复制按钮
-      html = html.replace(/(<pre[^>]*>)/g, '$1<button class="copy-btn" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent);this.textContent=\'✓\';setTimeout(()=>this.textContent=\'复制\',1500)">复制</button>');
-      currentBubble.innerHTML = html;
-    }
-  }
-
-  ws.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    if (data.type === 'text') {
-      if (pendingOutputDiv) {
-        pendingOutputDiv.textContent += data.content;
-        toolOutputLines = pendingOutputDiv.textContent.split('\n').length;
-      } else {
-        rawText += data.content;
-        ensureBubble();
-        renderBubble();
-      }
-      msgBox.scrollTop = msgBox.scrollHeight;
-    } else if (data.type === 'tool_status') {
-      const isDone = data.content.includes('✓');
-      flushTool();
-      const toolDiv = document.createElement('div');
-      toolDiv.className = 'tool-line ' + (isDone ? 'tool-done' : 'tool-running');
-      toolDiv.innerHTML = '<span class=icon>' + (isDone ? '✓' : '⚙') + '</span> ' + escapeHtml(data.content.trim());
-      contentWrap.appendChild(toolDiv);
-      if (!isDone) {
-        pendingOutputDiv = document.createElement('div');
-        pendingOutputDiv.className = 'tool-output';
-        contentWrap.appendChild(pendingOutputDiv);
-      }
-      msgBox.scrollTop = msgBox.scrollHeight;
-    } else if (data.type === 'done') {
-      flushTool();
-      renderBubble();
-      const timeEl = document.createElement('div');
-      timeEl.style.cssText = 'font-size:10px;color:var(--text3);margin-top:4px';
-      timeEl.textContent = now();
-      contentWrap.appendChild(timeEl);
-      busy = false; sendBtn.disabled = false;
-      statusEl.textContent = ''; statusEl.className = '';
-      input.focus(); ws.onmessage = null;
-    }
+  // ── 消息状态初始化 ──
+  _msgState = {
+    contentWrap: contentWrap,
+    currentBubble: null,
+    pendingOutputDiv: null,
+    toolOutputLines: 0,
+    rawText: ''
   };
 
   ws.send(JSON.stringify({ type: 'message', session_id: currentSession, content: text }));
+}
+
+// ── 消息渲染工具函数（模块级）──
+
+function flushTool(s) {
+  // 捕获引用：onclick 闭包需要保留 DOM 引用，不能依赖 s.pendingOutputDiv（会被置 null）
+  const outputDiv = s.pendingOutputDiv;
+  const lines = s.toolOutputLines;
+  if (outputDiv && lines > 0) {
+    const t = document.createElement('div');
+    t.className = 'tool-toggle';
+    t.textContent = '▾ 工具输出 (' + lines + ' 行)';
+    t.onclick = function() {
+      const open = outputDiv.classList.toggle('open');
+      this.textContent = (open ? '▾' : '▸') + ' 工具输出 (' + lines + ' 行)';
+    };
+    s.contentWrap.appendChild(t);
+  }
+  s.pendingOutputDiv = null; s.toolOutputLines = 0;
+}
+
+function ensureBubble(s) {
+  if (!s.currentBubble) {
+    s.currentBubble = document.createElement('div');
+    s.currentBubble.className = 'bubble assistant';
+    s.contentWrap.appendChild(s.currentBubble);
+  }
+  return s.currentBubble;
+}
+
+function renderBubble(s) {
+  if (s.currentBubble) {
+    let html = md(s.rawText);
+    // 为 pre 添加复制按钮
+    html = html.replace(/(<pre[^>]*>)/g, '$1<button class="copy-btn" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent);this.textContent=\'✓\';setTimeout(()=>this.textContent=\'复制\',1500)">复制</button>');
+    s.currentBubble.innerHTML = html;
+  }
+}
+
+function finishMessage(s) {
+  flushTool(s);
+  renderBubble(s);
+  const timeEl = document.createElement('div');
+  timeEl.style.cssText = 'font-size:10px;color:var(--text3);margin-top:4px';
+  timeEl.textContent = now();
+  s.contentWrap.appendChild(timeEl);
+  _msgState = null;
+  busy = false; sendBtn.disabled = false;
+  document.getElementById('stop-btn').classList.remove('visible');
+  statusEl.textContent = ''; statusEl.className = '';
+  input.focus();
+}
+
+// ── 停止生成 ──
+function stopGeneration() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'cancel' }));
+  if (_msgState) {
+    const cancelDiv = document.createElement('div');
+    cancelDiv.className = 'tool-line';
+    cancelDiv.innerHTML = '<span class=icon style=color:var(--danger)>■</span> 已停止生成';
+    _msgState.contentWrap.appendChild(cancelDiv);
+    finishMessage(_msgState);
+  }
 }
 
 function escapeHtml(s) {

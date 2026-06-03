@@ -182,6 +182,8 @@ class Agent:
             "thinking": self.runner.llm.thinking or "off",
             "max_turns": self.config.max_turns,
             "max_tokens": self.config.max_tokens,
+            "max_context": self.config.max_context,
+            "compact_threshold": self.config.compact_threshold,
             "session_id": self.config.session_id,
         }
 

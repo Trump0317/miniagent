@@ -29,6 +29,69 @@ try:
     if _HISTFILE.exists():
         readline.read_history_file(str(_HISTFILE))
     readline.set_history_length(1000)
+
+    # ── Tab 补全 ──
+    _BUILTIN_COMMANDS = [
+        "/help", "/clear", "/config", "/model ", "/thinking ",
+        "/turns ", "/tree", "/fork ", "/back",
+    ]
+    _THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]
+
+    class _Completer:
+        def __init__(self, agent_ref):
+            self._agent_ref = agent_ref  # 弱引用，避免循环
+
+        def complete(self, text: str, state: int) -> str | None:
+            """readline completer 协议。"""
+            if state == 0:
+                self._matches = self._build_matches(text)
+            try:
+                return self._matches[state]
+            except IndexError:
+                return None
+
+        def _build_matches(self, text: str) -> list[str]:
+            if not text.startswith("/"):
+                return []
+
+            # ── 内置命令补全 ──
+            if " " not in text:
+                # 正在输入命令名
+                return [c for c in _BUILTIN_COMMANDS if c.startswith(text)]
+
+            # ── 子命令参数补全 ──
+            parts = text.split(maxsplit=1)
+            cmd = parts[0]
+            partial = parts[1] if len(parts) > 1 else ""
+
+            if cmd == "/thinking":
+                return [l for l in _THINKING_LEVELS if l.startswith(partial)]
+
+            if cmd == "/model":
+                # 列出已知模型
+                known = ["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner",
+                         "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+                return [m for m in known if m.startswith(partial)]
+
+            if cmd == "/fork":
+                # 列出可 fork 的用户消息编号
+                try:
+                    agent = self._agent_ref() if callable(self._agent_ref) else self._agent_ref
+                    if agent:
+                        entries = agent.memory.get_tree_entries()
+                        user_entries = [e for e in entries if e.role == "user"]
+                        nums = [str(i) for i in range(1, len(user_entries) + 1)]
+                        return [n for n in nums if n.startswith(partial)]
+                except Exception:
+                    pass
+                return []
+
+            return []
+
+    _completer = _Completer(lambda: None)  # 延迟绑定 agent
+    readline.set_completer(_completer.complete)
+    readline.parse_and_bind("tab: complete")
+
 except ImportError:
     readline = None
 
@@ -205,21 +268,24 @@ def print_help(agent) -> None:
 def print_config_info(agent, command: str = "/config") -> None:
     """显示当前配置信息。"""
     info = agent.get_config_info()
-    print(f"\n  Provider:   {info['provider']}")
-    print(f"  模型:       {info['model']}")
-    print(f"  思考级别:   {info['thinking']}")
+    print(f"\n  Provider:       {info['provider']}")
+    print(f"  模型:           {info['model']}")
+    print(f"  思考级别:       {info['thinking']}")
     if info["max_turns"] is not None:
-        print(f"  最大轮数:   {info['max_turns']}")
+        print(f"  最大轮数:       {info['max_turns']}")
     else:
-        print(f"  最大轮数:   无限制")
-    print(f"  max_tokens: {info['max_tokens']:,}")
-    print(f"  会话 ID:    {info['session_id'][:16]}...")
+        print(f"  最大轮数:       无限制")
+    print(f"  max_tokens:     {info['max_tokens']:,}")
+    print(f"  max_context:    {agent.config.max_context:,}")
+    print(f"  压缩阈值:       {agent.config.compact_threshold:.0%}")
+    print(f"  会话 ID:        {info['session_id'][:20]}...")
+    print(f"  历史消息数:     {agent.memory.entry_count}")
     stats = agent.tracker.stats_by_model()
     if stats:
         total_in = sum(s["input"] for s in stats.values())
         total_out = sum(s["output"] for s in stats.values())
         total_cache = sum(s.get("cache_hit", 0) for s in stats.values())
-        print(f"  Token:      输入 {total_in:,} / 输出 {total_out:,} / 缓存命中 {total_cache:,}")
+        print(f"  Token:          输入 {total_in:,} / 输出 {total_out:,} / 缓存命中 {total_cache:,}")
     print()
 
 
@@ -324,6 +390,10 @@ def run_print_mode(agent, msg: str) -> None:
 def run_interactive(agent, initial_message: str = "") -> None:
     """交互式主循环。"""
     from .helpers import handle_tree, handle_back, handle_fork
+
+    # ── 绑定 completer 到当前 agent ──
+    if readline:
+        _completer._agent_ref = lambda: agent
 
     handler = OutputHandler()
 

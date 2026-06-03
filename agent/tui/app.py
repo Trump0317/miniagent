@@ -338,9 +338,19 @@ class TuiApp:
             return [("class:spinner", f" {s} Thinking...")]
         if self._showing_tree:
             return [("class:status", " Tree view -- Esc to return")]
-        status = f" {self._status}"
+
+        # ── 动态 Token 状态 ──
+        cfg = self._agent.config
+        stats = self._agent.tracker.stats_by_model()
+        token_info = ""
+        if stats:
+            tin = sum(s["input"] for s in stats.values())
+            tout = sum(s["output"] for s in stats.values())
+            token_info = f" | Tokens {tin:,}+{tout:,}"
+
+        status = f" {cfg.model} · {self._agent.memory.entry_count} msgs{token_info} · Ctrl+G quit"
         if not self._auto_scroll:
-            status += " | PgUp/Dn or scroll to navigate"
+            status += " | PgUp/Dn to navigate"
         return [("class:status", status)]
 
     # -- 输入处理 --
@@ -356,8 +366,17 @@ class TuiApp:
             self._messages.clear()
             self._showing_tree = False
             return
-        if text == "/session":
-            self._update_status()
+        if text == "/session" or text == "/config":
+            self._show_config()
+            return
+        if text.startswith("/model"):
+            self._handle_model(text)
+            return
+        if text.startswith("/thinking"):
+            self._handle_thinking(text)
+            return
+        if text.startswith("/turns"):
+            self._handle_turns(text)
             return
         if text.startswith("/tree"):
             self._show_tree()
@@ -542,8 +561,80 @@ class TuiApp:
             "Ctrl+G quit  |  Ctrl+F fork  |  Ctrl+B back  |  Ctrl+T tree\n"
             "Ctrl+O toggle (tool/thinking)  |  Esc clear/exit-tree\n"
             "PageUp/Down or mouse wheel to scroll\n\n"
-            "Commands: /help  /clear  /session  /fork [n]  /back  /tree"
+            "Commands: /help  /clear  /config  /model [name]  /thinking [lvl]  /turns [n]  /fork [n]  /back  /tree"
         )
+        m.done = True
+        self._messages.append(m)
+
+    def _show_config(self):
+        cfg = self._agent.config
+        info = self._agent.get_config_info()
+        t = self._agent.tracker
+        stats = t.stats_by_model()
+        lines = [
+            f"Provider: {cfg.provider}",
+            f"Model: {info['model']}",
+            f"Thinking: {info['thinking']}",
+            f"Max turns: {info['max_turns'] or 'unlimited'}",
+            f"Max tokens: {info['max_tokens']:,}",
+            f"Session: {info['session_id'][:12]}",
+        ]
+        if stats:
+            tin = sum(s["input"] for s in stats.values())
+            tout = sum(s["output"] for s in stats.values())
+            cache = sum(s.get("cache_hit", 0) for s in stats.values())
+            lines.append(f"Tokens: in={tin:,} out={tout:,} cache={cache:,}")
+        m = Message("assistant")
+        m.content = "\n".join(lines)
+        m.done = True
+        self._messages.append(m)
+
+    def _handle_model(self, text: str):
+        parts = text.split(maxsplit=1)
+        m = Message("assistant")
+        if len(parts) == 1:
+            m.content = f"Current model: {self._agent.config.model}"
+        else:
+            new_model = parts[1].strip()
+            old = self._agent.config.model
+            try:
+                self._agent.set_model(new_model)
+                m.content = f"Model: {old} → {new_model}"
+            except Exception as e:
+                m.content = f"Error: {e}"
+        m.done = True
+        self._messages.append(m)
+
+    def _handle_thinking(self, text: str):
+        parts = text.split(maxsplit=1)
+        m = Message("assistant")
+        current = self._agent.runner.llm.thinking or "off"
+        if len(parts) == 1:
+            m.content = f"Thinking: {current} (off/minimal/low/medium/high/xhigh)"
+        else:
+            level = parts[1].strip()
+            try:
+                self._agent.set_thinking(level if level != "off" else None)
+                new = self._agent.runner.llm.thinking or "off"
+                m.content = f"Thinking: {current} → {new}"
+            except ValueError as e:
+                m.content = str(e)
+        m.done = True
+        self._messages.append(m)
+
+    def _handle_turns(self, text: str):
+        parts = text.split(maxsplit=1)
+        m = Message("assistant")
+        current = self._agent.config.max_turns
+        if len(parts) == 1:
+            m.content = f"Max turns: {current or 'unlimited'}"
+        else:
+            try:
+                n = int(parts[1].strip())
+                self._agent.set_max_turns(n if n > 0 else None)
+                m.content = f"Max turns: {current or 'unlimited'} → {n if n > 0 else 'unlimited'}"
+            except (ValueError, Exception) as e:
+                m.content = f"Error: {e}"
         m.done = True
         self._messages.append(m)
 
