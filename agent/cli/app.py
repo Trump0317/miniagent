@@ -187,7 +187,10 @@ def print_help(agent) -> None:
     print(f"\n{BOLD}内置命令:{RESET}")
     print("  /help           — 显示此帮助")
     print("  /clear          — 清屏")
-    print("  /session        — 显示会话信息")
+    print("  /config         — 显示/修改配置")
+    print("  /model [name]   — 显示或切换模型")
+    print("  /thinking [lvl] — 显示或切换思考级别")
+    print("  /turns [n]      — 显示或设置最大轮数")
     print("  /tree           — 显示会话分支树")
     print("  /fork [n]       — 分叉到第 n 条用户消息之前")
     print("  /back           — 返回分叉前的位置")
@@ -199,22 +202,79 @@ def print_help(agent) -> None:
     print(f"        \\ 续行, 或直接粘贴多行文本\n")
 
 
-def print_session_info(agent) -> None:
-    """显示当前会话信息。"""
-    cfg = agent.config
-    print(f"\n  会话 ID:   {cfg.session_id}")
-    print(f"  模型:      {cfg.model}")
-    if agent.runner.llm.thinking:
-        print(f"  思考级别:  {agent.runner.llm.thinking}")
-    print(f"  上下文:    {'已加载' if cfg.context_files else '无'}")
-    print(f"  会话目录:  {cfg.session_dir}")
+def print_config_info(agent, command: str = "/config") -> None:
+    """显示当前配置信息。"""
+    info = agent.get_config_info()
+    print(f"\n  Provider:   {info['provider']}")
+    print(f"  模型:       {info['model']}")
+    print(f"  思考级别:   {info['thinking']}")
+    if info["max_turns"] is not None:
+        print(f"  最大轮数:   {info['max_turns']}")
+    else:
+        print(f"  最大轮数:   无限制")
+    print(f"  max_tokens: {info['max_tokens']:,}")
+    print(f"  会话 ID:    {info['session_id'][:16]}...")
     stats = agent.tracker.stats_by_model()
     if stats:
         total_in = sum(s["input"] for s in stats.values())
         total_out = sum(s["output"] for s in stats.values())
         total_cache = sum(s.get("cache_hit", 0) for s in stats.values())
-        print(f"  Token:     输入 {total_in:,}, 输出 {total_out:,}, 缓存命中 {total_cache:,}")
+        print(f"  Token:      输入 {total_in:,} / 输出 {total_out:,} / 缓存命中 {total_cache:,}")
     print()
+
+
+def handle_model(agent, command: str) -> None:
+    """/model [name] — 显示或切换模型。"""
+    parts = command.split(maxsplit=1)
+    if len(parts) == 1:
+        print(f"  当前模型: {agent.config.model}")
+        return
+    new_model = parts[1].strip()
+    old = agent.config.model
+    agent.set_model(new_model)
+    print(f"  {GREEN}已切换:{RESET} {old} → {new_model}")
+
+
+def handle_thinking(agent, command: str) -> None:
+    """/thinking [level] — 显示或切换思考级别。"""
+    parts = command.split(maxsplit=1)
+    if len(parts) == 1:
+        current = agent.runner.llm.thinking or "off"
+        print(f"  当前思考级别: {current}")
+        print(f"  可选: off, minimal, low, medium, high, xhigh")
+        return
+    level = parts[1].strip()
+    old = agent.runner.llm.thinking or "off"
+    try:
+        agent.set_thinking(level if level != "off" else None)
+        new = agent.runner.llm.thinking or "off"
+        print(f"  {GREEN}已切换:{RESET} {old} → {new}")
+    except ValueError as e:
+        print(f"  {RED}{e}{RESET}")
+
+
+def handle_turns(agent, command: str) -> None:
+    """/turns [n] — 显示或设置最大轮数（0 或不填 = 无限制）。"""
+    parts = command.split(maxsplit=1)
+    if len(parts) == 1:
+        current = agent.config.max_turns
+        if current is None:
+            print(f"  当前最大轮数: 无限制")
+        else:
+            print(f"  当前最大轮数: {current}")
+        return
+    arg = parts[1].strip()
+    old = agent.config.max_turns
+    try:
+        n = int(arg)
+        agent.set_max_turns(n if n > 0 else None)
+        new_label = f"{n}" if n > 0 else "无限制"
+        old_label = f"{old}" if old is not None else "无限制"
+        print(f"  {GREEN}已切换:{RESET} {old_label} → {new_label}")
+    except ValueError:
+        print(f"  {RED}无效参数: {arg}，请输入数字{RESET}")
+    except Exception as e:
+        print(f"  {RED}{e}{RESET}")
 
 
 def print_startup_info(agent) -> None:
@@ -294,8 +354,17 @@ def run_interactive(agent, initial_message: str = "") -> None:
         if command == "/clear":
             os.system("clear" if os.name == "posix" else "cls")
             continue
-        if command == "/session":
-            print_session_info(agent)
+        if command == "/session" or command == "/config":
+            print_config_info(agent, command)
+            continue
+        if command.startswith("/model"):
+            handle_model(agent, command)
+            continue
+        if command.startswith("/thinking"):
+            handle_thinking(agent, command)
+            continue
+        if command.startswith("/turns"):
+            handle_turns(agent, command)
             continue
         if command.startswith("/tree"):
             handle_tree(agent)

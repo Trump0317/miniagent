@@ -363,7 +363,7 @@ python -m unittest tests.test_events
 ### 3. 优化 CLI ✅
 - [x] CLI 代码提取到 `agent/cli/`，`agent.py` 瘦身为 7 行入口
 - [x] readline 命令历史、/help /session /clear 命令
-- [ ] 配置管理命令
+- [x] 配置管理命令
 
 ### 4. Core 重构 ✅
 - [x] `session_tree.py`: 删除内嵌测试（532→326 行）

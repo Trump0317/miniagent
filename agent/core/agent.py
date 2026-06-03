@@ -148,6 +148,36 @@ class Agent:
         """重建系统提示词（fork/back 后调用，反映新的上下文路径）。"""
         self._system_prompt = self._prompt.build()
 
+    def set_model(self, model: str) -> None:
+        """运行时切换模型。"""
+        self.config.model = model
+        self.runner.llm.model = model
+
+    def set_thinking(self, level: str | None) -> None:
+        """运行时切换思考级别（off / minimal / low / medium / high / xhigh）。"""
+        valid = {"off", "minimal", "low", "medium", "high", "xhigh"}
+        if level is not None and level not in valid:
+            raise ValueError(f"无效思考级别: {level}，可选: {', '.join(sorted(valid))}")
+        self.runner.llm.thinking = level
+
+    def set_max_turns(self, n: int | None) -> None:
+        """运行时设置最大轮数（None = 不限制）。"""
+        if n is not None and n <= 0:
+            raise ValueError(f"max_turns 必须 > 0，实际: {n}")
+        self.config.max_turns = n
+        self.runner.max_turns = n
+
+    def get_config_info(self) -> dict:
+        """获取当前配置摘要。"""
+        return {
+            "model": self.config.model,
+            "provider": self.config.provider,
+            "thinking": self.runner.llm.thinking or "off",
+            "max_turns": self.config.max_turns,
+            "max_tokens": self.config.max_tokens,
+            "session_id": self.config.session_id,
+        }
+
     # ── 内部 ──
 
     def _build_context(self) -> list[dict]:
