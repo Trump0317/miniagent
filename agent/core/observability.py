@@ -36,13 +36,14 @@ class Observability:
         stats = obs.summary()  # 获取当前请求的汇总指标
     """
 
-    def __init__(self, log_dir: str | Path | None = None):
+    def __init__(self, log_dir: str | Path | None = None, tracker=None):
         self._log_path: Path | None = None
         if log_dir:
             dir_path = Path(log_dir)
             dir_path.mkdir(parents=True, exist_ok=True)
             self._log_path = dir_path / "trace.jsonl"
 
+        self._tracker = tracker
         self._trace_id = ""
         self._request_start = 0.0
         self._turn_starts: dict[int, float] = {}
@@ -53,8 +54,6 @@ class Observability:
         self._turns = 0
         self._tool_calls = 0
         self._tool_failures = 0
-        self._total_tokens_in = 0
-        self._total_tokens_out = 0
 
     # ── 公共 API ──
 
@@ -71,6 +70,11 @@ class Observability:
     def summary(self) -> dict:
         """返回当前请求的汇总指标。"""
         elapsed = time.time() - self._request_start if self._request_start else 0
+        tokens_in = tokens_out = 0
+        if self._tracker:
+            stats = self._tracker.stats_by_model()
+            tokens_in = sum(s["input"] for s in stats.values())
+            tokens_out = sum(s["output"] for s in stats.values())
         return {
             "trace_id": self._trace_id,
             "elapsed_ms": round(elapsed * 1000),
@@ -78,8 +82,8 @@ class Observability:
             "tool_calls": self._tool_calls,
             "tool_failures": self._tool_failures,
             "errors": len(self._errors),
-            "tokens_in": self._total_tokens_in,
-            "tokens_out": self._total_tokens_out,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
         }
 
     # ── 事件处理 ──
@@ -91,6 +95,8 @@ class Observability:
         self._tool_calls = 0
         self._tool_failures = 0
         self._errors = []
+        self._turn_starts.clear()
+        self._tool_starts.clear()
         text = (event.data or {}).get("text", "")
         self._log("request:start", {
             "message": text[:200],
@@ -173,8 +179,9 @@ class Observability:
             try:
                 with self._log_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(f"[Observability] 日志写入失败: {e}", file=sys.stderr)
 
     @staticmethod
     def _elapsed(start: float | None) -> int:

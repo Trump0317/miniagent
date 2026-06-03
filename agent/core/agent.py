@@ -121,7 +121,7 @@ class Agent:
         self._setup_events()
 
         # ── 可观测性 ──
-        self._obs = Observability(log_dir=cfg.session_dir)
+        self._obs = Observability(log_dir=cfg.session_dir, tracker=self.tracker)
         self._obs.attach(self.bus)
 
     # ── 公共 API ──

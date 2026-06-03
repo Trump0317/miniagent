@@ -128,7 +128,12 @@ class AgentRunner:
                             tool_calls_accum[idx][k] = chunk[k]
 
         # ── 写入助手消息 ──
-        has_tool_calls = bool(tool_calls_accum)
+        # 过滤不完整工具调用（id 或 name 缺失）
+        valid_calls = [
+            tc for tc in tool_calls_accum.values()
+            if tc["id"] and tc["name"]
+        ]
+        has_tool_calls = bool(valid_calls)
         assistant_content: str | None = full_content or None
         if assistant_content is None and not has_tool_calls:
             assistant_content = full_reasoning or ""
@@ -139,7 +144,7 @@ class AgentRunner:
             assistant_msg["tool_calls"] = [
                 {"id": tc["id"], "type": "function",
                  "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                for tc in tool_calls_accum.values()
+                for tc in valid_calls
             ]
         history.append(assistant_msg)
 
