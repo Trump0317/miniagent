@@ -1,0 +1,4 @@
+include agent/core/system_prompt.md
+include agent/subagent/*.md
+include agent/prompts/*.md
+include agent/web/static/index.html

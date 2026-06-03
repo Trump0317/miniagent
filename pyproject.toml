@@ -27,3 +27,9 @@ miniagent = "agent:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*"]
+
+[tool.setuptools.package-data]
+"agent.core" = ["system_prompt.md"]
+"agent.subagent" = ["*.md"]
+"agent.prompts" = ["*.md"]
+"agent.web" = ["static/index.html"]
