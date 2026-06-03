@@ -52,7 +52,7 @@ class TestMessage(unittest.TestCase):
         m.tool_name = "read"
         m.tool_result = "x" * 300
         m.tool_collapsed = True
-        self.assertIn("...", m.display_text)
+        self.assertEqual(m.display_text, "")  # 折叠时不显示任何预览
 
     def test_tool_expanded_full(self):
         m = Message("tool")

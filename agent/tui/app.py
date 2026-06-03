@@ -69,11 +69,8 @@ class Message:
     @property
     def display_text(self) -> str:
         if self.role == "tool":
-            if self.tool_result and self.tool_collapsed:
-                preview = self.tool_result[:200].replace("\n", " ")
-                if len(self.tool_result) > 200:
-                    preview += " ..."
-                return preview
+            if self.tool_collapsed:
+                return ""  # 折叠时完全不显示预览，只保留工具名行
             return self.tool_result[:3000] if self.tool_result else self.content
         if self.role == "thinking" and self.thinking_collapsed:
             return self.content[:200].replace("\n", " ") + (" ..." if len(self.content) > 200 else "")
@@ -445,6 +442,12 @@ class TuiApp:
                 if self._current is None or self._current.role == "thinking":
                     self._current = Message("assistant")
                     self._messages.append(self._current)
+                elif self._current.role == "tool":
+                    # 工具流式输出：追加到 tool_result，不要污染 assistant content
+                    self._current.tool_result = (self._current.tool_result or "") + chunk.get("content", "")
+                    self._auto_scroll = True
+                    updated = True
+                    continue
                 self._current.content += chunk.get("content", "")
                 self._auto_scroll = True
                 updated = True
@@ -460,14 +463,19 @@ class TuiApp:
             elif t == ChunkType.TOOL_STATUS:
                 # 合并到上一条 tool 消息（如果它还没有 result）
                 tool_name = chunk.get("content", "").strip().replace("\n", " ")
+                is_done = "✓" in chunk.get("content", "")
                 if (self._messages and self._messages[-1].role == "tool"
                         and not self._messages[-1].tool_result
                         and not self._messages[-1].tool_name):
                     self._messages[-1].tool_name = tool_name
+                    self._current = self._messages[-1]
                 else:
                     m = Message("tool")
                     m.tool_name = tool_name
                     self._messages.append(m)
+                    self._current = m
+                if is_done:
+                    self._current = None  # 后续 TEXT 将创建新的 assistant 消息
                 updated = True
 
             elif t == ChunkType.TOOL_RESULT:
@@ -481,6 +489,7 @@ class TuiApp:
                     m = Message("tool")
                     m.tool_result = result
                     self._messages.append(m)
+                self._current = None  # 工具完成，后续 TEXT 创建 assistant
                 self._auto_scroll = True
                 updated = True
 
