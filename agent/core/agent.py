@@ -27,6 +27,7 @@ from ..tools import SkillsLoader
 from ..tools.executor import ToolExecutor
 from ..tools.subagent import AgentLoader
 from ..tools.registry import build_default_registry
+from ..tools.mcp_client import McpClientManager
 from .prompts import PromptLoader
 
 
@@ -94,8 +95,14 @@ class Agent:
             non_sys = [m for m in self.memory.history if m.get("role") != "system"]
             print(f"[Agent] 已恢复会话（{len(non_sys)} 条上下文消息）", flush=True)
 
+        # ── MCP ──
+        self._mcp = McpClientManager(config_path=cfg.mcp_config_path or None)
+
         # ── 工具注册 ──
-        registry = build_default_registry(cfg, skills, client, agent_loader, self.tracker)
+        registry = build_default_registry(
+            cfg, skills, client, agent_loader, self.tracker,
+            mcp_manager=self._mcp,
+        )
 
         # ── 运行器 ──
         self.runner = AgentRunner(
@@ -128,10 +135,11 @@ class Agent:
             self.memory.append_message(msg)
 
     def shutdown(self) -> dict:
-        """关闭会话：统计 + 压缩。"""
+        """关闭会话：统计 + 压缩 + MCP 清理。"""
         self.bus.emit("session:end", {})
         stats = self.tracker.stats_by_model()
         self._system_prompt, compact_result = self._compaction.compact()
+        self._mcp.shutdown()
         return {"token_stats": stats, "compact": compact_result}
 
     # ── 公共配置方法 ──

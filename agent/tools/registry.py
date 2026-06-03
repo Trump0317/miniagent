@@ -98,6 +98,7 @@ def build_default_registry(
     client,        # OpenAI client
     agent_loader,  # AgentLoader
     tracker,       # TokenTracker
+    mcp_manager=None,  # McpClientManager | None
 ) -> ToolRegistry:
     """构建 Agent 的默认工具注册表（含子代理）。
 
@@ -134,4 +135,10 @@ def build_default_registry(
         system_prompt=_DEFAULT_SUBAGENT_PROMPT,
         max_turns=cfg.subagent_max_turns, sub_model=cfg.subagent_model,
     ))
+
+    # ── MCP 工具 ──
+    if mcp_manager:
+        for tool_cls in mcp_manager.get_tool_classes():
+            registry.register(tool_cls())
+
     return registry
