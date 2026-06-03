@@ -7,16 +7,26 @@
 ## 安装
 
 ```bash
-git clone <repo>
-cd miniagent
-pip install -e ".[all]"
+# 1. 克隆到任意目录（源码位置不影响使用）
+git clone <repo> /path/to/miniagent
+
+# 2. 将 miniagent 安装到当前 Python 环境
+pip install -e "/path/to/miniagent[all]"
+# 或者只安装核心依赖（不需要 Web/TUI/MCP）：
+# pip install -e "/path/to/miniagent"
 ```
+
+> 安装完成后即可删除克隆的源码
+> 用户数据（.memory/、sessions/ 等）存储在执行 `miniagent` 命令的**当前工作目录**，与源码位置无关。
 
 ## 快速开始
 
 ```bash
 # 配置 API Key
 export DEEPSEEK_API_KEY=sk-xxx
+
+# 进入你的项目目录（用户数据会生成在此目录）
+cd /path/to/your-project
 
 miniagent                        # CLI 交互
 miniagent --tui                  # TUI 终端界面

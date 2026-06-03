@@ -8,6 +8,9 @@
 # 全新虚拟环境
 python3 -m venv /tmp/test_venv
 source /tmp/test_venv/bin/activate
+
+# 进入 miniagent 源码目录（git clone 后在仓库根目录执行）
+cd miniagent
 pip install -e ".[all]"
 ```
 
@@ -73,6 +76,21 @@ curl -s -X POST -H "Content-Type: application/json" \
   http://127.0.0.1:9999/api/upload/resolve | python -m json.tool
 # 预期: {"ok": true, "filename": "...", "content": "test content\n", ...}
 
+# WebSocket 测试（需 websocket-client）
+pip install websocket-client
+python -c "
+import json, websocket
+ws = websocket.create_connection('ws://127.0.0.1:9999/ws')
+ws.send(json.dumps({'type': 'message', 'session_id': 'test', 'content': 'hi'}))
+ws.settimeout(3)
+try:
+    resp = json.loads(ws.recv())
+    print('WS response type:', resp.get('type'))
+except Exception as e:
+    print('WS response (可能因无 API Key 超时):', type(e).__name__)
+ws.close()
+"
+
 kill %1
 rm -f /tmp/test_upload.txt
 ```
@@ -122,17 +140,6 @@ miniagent -p "列出当前目录的文件"
 # 多行输入
 printf "hello\nworld\n" | miniagent -p "翻译以下内容为中文"
 # 预期: 翻译结果
-
-# WebSocket 测试（需 websocket-client）
-pip install websocket-client
-python -c "
-import json, websocket
-ws = websocket.create_connection('ws://127.0.0.1:9999/ws')
-ws.send(json.dumps({'type': 'message', 'session_id': 'test', 'content': 'hi'}))
-resp = json.loads(ws.recv())
-print('WS response type:', resp.get('type'))
-ws.close()
-"
 ```
 
 ## 6. 路径验证
