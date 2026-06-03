@@ -353,12 +353,12 @@ python -m unittest tests.test_events
 - [x] 优化命令模板（/scout / /review）的展开模板 → 细化指引
 - [x] 考虑添加任务分解/规划相关的提示词引导
 
-### 2. 实现 Web UI ✅（explore 分支）
+### 2. 实现 Web UI ✅
 - [x] FastAPI + WebSocket 流式对话
 - [x] Agent 核心统一 chunk 格式（text/tool_status/done），CLI/Web 共用
 - [x] 多会话管理、实时流式输出、Markdown 渲染
-- [ ] 文件上传和 @引用
-- [ ] 模型/Provider 切换
+- [x] 文件上传和 @引用
+- [x] 模型/Provider 切换
 
 ### 3. 优化 CLI ✅
 - [x] CLI 代码提取到 `agent/cli/`，`agent.py` 瘦身为 7 行入口

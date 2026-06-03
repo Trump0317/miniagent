@@ -11,14 +11,15 @@ import asyncio
 import json
 import logging
 import queue
+import shutil
 import threading
 from pathlib import Path
 from datetime import datetime
 
 from agent.core.chunks import done_chunk
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent.web.session import SessionManager
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 # ── FastAPI app ──
 
 STATIC_DIR = Path(__file__).parent / "static"
+UPLOAD_DIR = Path.home() / ".miniagent" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="miniagent")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -122,6 +125,95 @@ async def session_back(session_id: str):
         agent.rebuild_system_prompt()
         return {"ok": True, "leaf_id": agent.memory.leaf_id}
     return {"ok": False, "error": "fork 栈为空"}
+
+
+# ── REST API: 配置 ──
+
+
+@app.get("/api/sessions/{session_id}/settings")
+async def get_settings(session_id: str):
+    """获取当前会话的配置。"""
+    agent = sessions.get_or_create_agent(session_id)
+    return agent.get_config_info()
+
+
+@app.post("/api/sessions/{session_id}/settings")
+async def update_settings(session_id: str, data: dict):
+    """更新会话配置（model / thinking / max_turns）。"""
+    agent = sessions.get_or_create_agent(session_id)
+    changes = {}
+    try:
+        if "model" in data:
+            old = agent.config.model
+            agent.set_model(data["model"])
+            changes["model"] = {"old": old, "new": data["model"]}
+        if "thinking" in data:
+            old = agent.runner.llm.thinking or "off"
+            agent.set_thinking(data["thinking"] if data["thinking"] != "off" else None)
+            changes["thinking"] = {"old": old, "new": agent.runner.llm.thinking or "off"}
+        if "max_turns" in data:
+            old = agent.config.max_turns
+            n = data["max_turns"]
+            agent.set_max_turns(n if (isinstance(n, int) and n > 0) else None)
+            changes["max_turns"] = {"old": old, "new": agent.config.max_turns}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return {"ok": True, "changes": changes}
+
+
+# ── REST API: 文件上传 ──
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """上传文件，返回引用路径。"""
+    import uuid
+    safe_name = Path(file.filename or "upload").name
+    dest = UPLOAD_DIR / f"{uuid.uuid4().hex[:8]}_{safe_name}"
+    try:
+        with dest.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        file.file.close()
+
+    return {
+        "ok": True,
+        "filename": safe_name,
+        "path": str(dest),
+        "ref": f"@{dest}",
+        "size": dest.stat().st_size,
+    }
+
+
+@app.post("/api/upload/resolve")
+async def resolve_ref(data: dict):
+    """解析 @file 引用，返回文件内容。"""
+    path_str = data.get("path", "")
+    if not path_str:
+        return JSONResponse({"ok": False, "error": "缺少 path"}, status_code=400)
+
+    # 安全：只允许已上传的文件和 ~ 路径
+    path = Path(path_str).expanduser().resolve()
+    try:
+        if not path.is_relative_to(UPLOAD_DIR) and not path.is_relative_to(Path.home()):
+            return JSONResponse({"ok": False, "error": "不允许的路径"}, status_code=403)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "不允许的路径"}, status_code=403)
+
+    try:
+        content = path.read_text(encoding="utf-8")
+        return {
+            "ok": True,
+            "filename": path.name,
+            "content": content,
+            "size": len(content),
+        }
+    except FileNotFoundError:
+        return JSONResponse({"ok": False, "error": "文件不存在"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 # ── WebSocket 端点 ──

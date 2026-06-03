@@ -114,6 +114,25 @@ body{font:14px/1.6 var(--font);background:var(--bg);color:var(--text);height:100
 /* 状态条 */
 #status{font:11px var(--font);color:var(--text3);text-align:center;padding:2px 0 6px;transition:color .3s}
 #status.thinking{color:var(--warn)}
+/* 设置面板 */
+#settings-btn{cursor:pointer;font-size:16px;color:var(--text3);padding:2px 6px;border-radius:var(--radius-sm);transition:all .15s;background:none;border:none;margin-left:auto}
+#settings-btn:hover{color:var(--text);background:var(--surface2)}
+#settings-panel{display:none;position:absolute;top:52px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;width:260px;box-shadow:var(--shadow);z-index:100;font-size:13px}
+#settings-panel.open{display:block}
+#settings-panel label{display:block;color:var(--text2);font-size:11px;margin:8px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+#settings-panel label:first-child{margin-top:0}
+#settings-panel input,#settings-panel select{width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font:13px var(--font)}
+#settings-panel input:focus,#settings-panel select:focus{outline:none;border-color:var(--accent)}
+#settings-panel select{appearance:none;-webkit-appearance:none;cursor:pointer}
+#settings-panel .save-btn{margin-top:12px;width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font:13px var(--font);font-weight:500;cursor:pointer;transition:all var(--transition)}
+#settings-panel .save-btn:hover{background:var(--accent2)}
+/* 文件上传 */
+#upload-btn{cursor:pointer;font-size:18px;color:var(--text3);padding:6px 10px;border-radius:var(--radius-sm);transition:all .15s;display:flex;align-items:center;border:none;background:none}
+#upload-btn:hover{color:var(--accent);background:var(--surface2)}
+#upload-status{font:11px var(--font);color:var(--text3);margin-left:4px;display:none}
+/* 拖放区 */
+#drop-zone{display:none;position:absolute;inset:0;background:rgba(124,124,255,.08);border:2px dashed var(--accent);border-radius:var(--radius);align-items:center;justify-content:center;font-size:16px;color:var(--accent);z-index:50;pointer-events:none}
+#drop-zone.show{display:flex}
 </style>
 </head>
 <body>
@@ -143,6 +162,23 @@ body{font:14px/1.6 var(--font);background:var(--bg);color:var(--text);height:100
     <span class="toggle-sidebar" onclick="toggleSidebar()" title="侧栏">☰</span>
     <span class="dot"></span>
     <span id="header-text">miniagent</span>
+    <button id="settings-btn" onclick="toggleSettings()" title="设置">⚙</button>
+    <div id="settings-panel">
+      <label>模型</label>
+      <input id="cfg-model" placeholder="deepseek-v4-flash">
+      <label>思考级别</label>
+      <select id="cfg-thinking">
+        <option value="off">off</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+      </select>
+      <label>最大轮数（0=无限制）</label>
+      <input id="cfg-turns" type="number" min="0" value="0" placeholder="0">
+      <button class="save-btn" onclick="saveSettings()">应用</button>
+    </div>
   </div>
   <div id="messages">
     <div class="landing" id="landing">
@@ -155,7 +191,11 @@ body{font:14px/1.6 var(--font);background:var(--bg);color:var(--text);height:100
   <div id="input-area">
     <div id="input-wrap">
       <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1"></textarea>
+      <div id="drop-zone">📂 释放文件以上传</div>
     </div>
+    <button id="upload-btn" onclick="document.getElementById('file-input').click()" title="上传文件">📎</button>
+    <span id="upload-status"></span>
+    <input type="file" id="file-input" style="display:none" onchange="handleFileUpload(this.files)" multiple>
     <button id="send" onclick="send()">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       发送
@@ -250,6 +290,11 @@ async function selectSession(sid) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'switch', session_id: sid }));
   await loadHistory(sid);
   refreshTree();
+  // 加载模型信息
+  try {
+    const data = await (await fetch('/api/sessions/' + sid + '/settings')).json();
+    if (data.model) headerText.textContent = '会话: ' + sid + ' · ' + data.model;
+  } catch(e) {}
 }
 
 async function loadHistory(sid) {
@@ -280,14 +325,17 @@ function now() {
   return new Date().toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit' });
 }
 
-function send() {
+async function send() {
   if (!ws || ws.readyState !== WebSocket.OPEN || busy || !currentSession) return;
-  const text = input.value.trim();
+  let text = input.value.trim();
   if (!text) return;
 
   busy = true; sendBtn.disabled = true;
   input.value = ''; input.style.height = 'auto';
   statusEl.textContent = '思考中...'; statusEl.className = 'thinking';
+
+  // 解析 @引用
+  if (text.includes('@')) text = await resolveAtRefs(text);
 
   if (isCommand(text)) { busy = false; sendBtn.disabled = false; statusEl.textContent = ''; statusEl.className = ''; input.focus(); return; }
 
@@ -387,12 +435,130 @@ function escapeHtml(s) {
   const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
 }
 
+// ── @引用解析 ──
+async function resolveAtRefs(text) {
+  const refs = text.match(/@[\w./~-]+/g);
+  if (!refs) return text;
+  let resolved = text;
+  for (const ref of refs) {
+    try {
+      const resp = await fetch('/api/upload/resolve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: ref.slice(1)})
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        resolved = resolved.replace(ref, `# 文件: ${data.filename}\n\n${data.content}`);
+      }
+    } catch(e) {}
+  }
+  return resolved;
+}
+
 // ── 内置命令 ──
 function isCommand(text) {
   if (text === '/tree') { refreshTree(); return true; }
   if (text === '/back') { doBack(); return true; }
   return false;
 }
+
+// ── 设置面板 ──
+function toggleSettings() {
+  const panel = document.getElementById('settings-panel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open') && currentSession) loadSettings();
+}
+
+async function loadSettings() {
+  if (!currentSession) return;
+  try {
+    const data = await (await fetch('/api/sessions/' + currentSession + '/settings')).json();
+    document.getElementById('cfg-model').value = data.model || '';
+    document.getElementById('cfg-thinking').value = data.thinking || 'off';
+    document.getElementById('cfg-turns').value = data.max_turns || 0;
+  } catch(e) {}
+}
+
+async function saveSettings() {
+  if (!currentSession) return;
+  const body = {};
+  const model = document.getElementById('cfg-model').value.trim();
+  const thinking = document.getElementById('cfg-thinking').value;
+  const turns = parseInt(document.getElementById('cfg-turns').value) || 0;
+  if (model) body.model = model;
+  body.thinking = thinking;
+  body.max_turns = turns > 0 ? turns : null;
+  try {
+    const resp = await fetch('/api/sessions/' + currentSession + '/settings', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '配置已更新'; statusEl.className = '';
+      setTimeout(() => { statusEl.textContent = ''; }, 1500);
+      document.getElementById('settings-panel').classList.remove('open');
+      if (data.changes.model) headerText.textContent = '会话: ' + currentSession + ' · ' + data.changes.model.new;
+    } else {
+      statusEl.textContent = '错误: ' + data.error; statusEl.className = '';
+    }
+  } catch(e) {
+    statusEl.textContent = '保存失败'; statusEl.className = '';
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('settings-panel');
+  const btn = document.getElementById('settings-btn');
+  if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== btn) {
+    panel.classList.remove('open');
+  }
+});
+
+// ── 文件上传 ──
+const uploadStatus = document.getElementById('upload-status');
+
+async function handleFileUpload(files) {
+  if (!currentSession) return;
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    uploadStatus.style.display = 'inline'; uploadStatus.textContent = '上传中...';
+    try {
+      const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (data.ok) {
+        input.value += (input.value ? '\n' : '') + data.ref;
+        uploadStatus.textContent = '✓ ' + data.filename;
+        setTimeout(() => { uploadStatus.style.display = 'none'; }, 2000);
+      } else {
+        uploadStatus.textContent = '✗ ' + data.error;
+        setTimeout(() => { uploadStatus.style.display = 'none'; }, 2000);
+      }
+    } catch(e) {
+      uploadStatus.textContent = '✗ 上传失败';
+      setTimeout(() => { uploadStatus.style.display = 'none'; }, 2000);
+    }
+    input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    input.focus();
+  }
+  document.getElementById('file-input').value = '';
+}
+
+// ── 拖放文件 ──
+const dropZone = document.getElementById('drop-zone');
+const inputWrap = document.getElementById('input-wrap');
+
+['dragenter','dragover'].forEach(e => {
+  document.addEventListener(e, (ev) => { ev.preventDefault(); dropZone.classList.add('show'); });
+});
+['dragleave','drop'].forEach(e => {
+  document.addEventListener(e, (ev) => {
+    ev.preventDefault();
+    dropZone.classList.remove('show');
+    if (e === 'drop' && ev.dataTransfer?.files?.length) handleFileUpload(ev.dataTransfer.files);
+  });
+});
 
 // ── 快捷键 ──
 input.addEventListener('keydown', (e) => {
