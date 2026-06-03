@@ -7,9 +7,9 @@
 ## 安装
 
 ```bash
-pip install -e .              # 开发模式
-pip install -e ".[web,tui]"   # 含 Web/TUI 依赖
-pip install -e ".[all]"       # 全部依赖（含 MCP）
+git clone <repo>
+cd miniagent
+pip install -e ".[all]"
 ```
 
 ## 快速开始
@@ -29,7 +29,8 @@ miniagent -r                     # 恢复上次会话
 ## 架构
 
 ```
-agent.py                         ← 入口（--tui / --web 分发）
+agent.py                         ← 兼容入口（pyproject.toml → miniagent 命令）
+run.sh                           ← 一键脚本
 └── agent/
     ├── ai/                       # LLM 调用封装 + Provider 配置
     ├── cli/                      # CLI 交互外壳
@@ -77,9 +78,9 @@ agent.py                         ← 入口（--tui / --web 分发）
 ## 三种界面
 
 ```bash
-python agent.py                  # CLI: readline 交互
-python agent.py --tui            # TUI: 对话气泡 + 快捷键
-python agent.py --web            # Web: 浏览器 http://127.0.0.1:8000
+miniagent                  # CLI: readline 交互
+miniagent --tui            # TUI: 对话气泡 + 快捷键
+miniagent --web            # Web: 浏览器 http://127.0.0.1:8000
 ```
 
 ### CLI 内置命令
@@ -177,6 +178,15 @@ python -m unittest discover tests    # 552 个测试
 |------|------|
 | 单元测试 | 21 个模块，全组件覆盖 |
 | 集成测试 | Agent 完整流程、持久化、树导航、压缩、重试 |
+
+## 构建与发布
+
+```bash
+python -m build                    # → dist/miniagent-1.0.0-py3-none-any.whl
+twine upload dist/*                # 发布到 PyPI
+```
+
+`pyproject.toml` 管理依赖和入口点，`MANIFEST.in` 声明需打包的非 Python 文件（.md, .html）。
 
 ## 项目文档
 
