@@ -4,14 +4,22 @@
 """
 
 from __future__ import annotations
+import time
 from types import SimpleNamespace
 from typing import Generator, TYPE_CHECKING
+
+from openai import APIConnectionError, RateLimitError, APITimeoutError, InternalServerError
 
 from .chunks import text_chunk, reasoning_chunk, tool_status_chunk, done_chunk, ChunkType
 
 if TYPE_CHECKING:
     from .tracker import TokenTracker
     from .events import EventBus
+
+# ── 可重试的 LLM 错误类型 ──
+_RETRYABLE = (APIConnectionError, RateLimitError, APITimeoutError, InternalServerError)
+_MAX_RETRIES = 3
+_BASE_DELAY = 2  # 秒
 
 
 class AgentRunner:
@@ -48,71 +56,119 @@ class AgentRunner:
             if self.bus:
                 self.bus.emit("turn:start", {"turn": turns})
 
-            # ── 1. LLM 流式调用 ──
-            full_content, full_reasoning = "", ""
-            tool_calls_accum: dict[int, dict] = {}
+            # ── 1. LLM 流式调用（含重试）──
+            history_snapshot = len(history)
+            finish = yield from self._stream_with_retry(
+                history, tool_schemas, history_snapshot,
+            )
+            if finish:
+                return  # 本轮对话完成
 
-            for chunk in self.llm.stream(history, tool_schemas):
-                t = chunk["type"]
-                if t == "usage":
-                    self._record(chunk)
-                elif t == "reasoning":
-                    full_reasoning += chunk["text"]
-                    yield reasoning_chunk(chunk["text"])
-                elif t == "content":
-                    full_content += chunk["text"]
-                    yield text_chunk(chunk["text"])
-                elif t == "tool_call":
-                    idx = chunk["index"]
-                    if idx not in tool_calls_accum:
-                        tool_calls_accum[idx] = {"id": None, "name": None, "arguments": ""}
-                    for k in ("id", "name", "arguments"):
-                        if k in chunk and chunk[k]:
-                            if k == "arguments":
-                                tool_calls_accum[idx][k] += chunk[k]
-                            else:
-                                tool_calls_accum[idx][k] = chunk[k]
+    def _stream_with_retry(
+        self,
+        history: list[dict],
+        tool_schemas: list[dict],
+        history_snapshot: int,
+    ) -> Generator[dict, None, bool]:
+        """执行一次 LLM 流式调用，自动重试可恢复的错误。
 
-            # ── 2. 写入助手消息 ──
-            has_tool_calls = bool(tool_calls_accum)
-            assistant_content: str | None = full_content or None
-            if assistant_content is None and not has_tool_calls:
-                assistant_content = full_reasoning or ""
-            assistant_msg: dict = {"role": "assistant", "content": assistant_content}
-            if full_reasoning:
-                assistant_msg["reasoning_content"] = full_reasoning
-            if has_tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {"id": tc["id"], "type": "function",
-                     "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                    for tc in tool_calls_accum.values()
-                ]
-            history.append(assistant_msg)
+        产出 chunk，返回 True 表示本轮完成（无工具调用或最终错误），
+        False 表示需要继续执行工具调用。
+        """
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return (yield from self._do_stream(history, tool_schemas))
+            except _RETRYABLE as e:
+                # 回滚 history
+                del history[history_snapshot:]
+                if attempt < _MAX_RETRIES - 1:
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    yield tool_status_chunk(
+                        f"\n[LLM 调用失败: {e}，{delay}s 后重试 ({attempt + 2}/{_MAX_RETRIES})]\n"
+                    )
+                    time.sleep(delay)
+                else:
+                    yield tool_status_chunk(
+                        f"\n[LLM 调用失败，已达最大重试次数: {e}]\n"
+                    )
+                    yield done_chunk()
+                    return True
 
-            # ── 3. 无工具调用 → 结束 ──
-            if not tool_calls_accum:
-                if self.bus:
-                    self.bus.emit("turn:end", {"text": full_content})
-                yield done_chunk()
-                return
+        return True  # unreachable
 
-            # ── 4. 执行工具 ──
-            tool_results: dict[str, str] = {}
-            for item in self.tools.execute(assistant_msg["tool_calls"]):
-                if item.get("type") == ChunkType.TOOL_RESULT:
-                    tool_results[item["id"]] = item["result"]
-                yield item
+    def _do_stream(
+        self, history: list[dict], tool_schemas: list[dict],
+    ) -> Generator[dict, None, bool]:
+        """单次 LLM 流式调用 + 工具执行。
 
-            # ── 5. 写入工具结果 ──
-            for tc in assistant_msg["tool_calls"]:
-                tid = tc["id"]
-                if tid in tool_results:
-                    tool_msg = {
-                        "role": "tool",
-                        "tool_call_id": tid,
-                        "content": tool_results[tid],
-                    }
-                    history.append(tool_msg)
+        返回 True 表示本轮对话已完成（无工具调用）。
+        """
+        full_content, full_reasoning = "", ""
+        tool_calls_accum: dict[int, dict] = {}
+
+        for chunk in self.llm.stream(history, tool_schemas):
+            t = chunk["type"]
+            if t == "usage":
+                self._record(chunk)
+            elif t == "reasoning":
+                full_reasoning += chunk["text"]
+                yield reasoning_chunk(chunk["text"])
+            elif t == "content":
+                full_content += chunk["text"]
+                yield text_chunk(chunk["text"])
+            elif t == "tool_call":
+                idx = chunk["index"]
+                if idx not in tool_calls_accum:
+                    tool_calls_accum[idx] = {"id": None, "name": None, "arguments": ""}
+                for k in ("id", "name", "arguments"):
+                    if k in chunk and chunk[k]:
+                        if k == "arguments":
+                            tool_calls_accum[idx][k] += chunk[k]
+                        else:
+                            tool_calls_accum[idx][k] = chunk[k]
+
+        # ── 写入助手消息 ──
+        has_tool_calls = bool(tool_calls_accum)
+        assistant_content: str | None = full_content or None
+        if assistant_content is None and not has_tool_calls:
+            assistant_content = full_reasoning or ""
+        assistant_msg: dict = {"role": "assistant", "content": assistant_content}
+        if full_reasoning:
+            assistant_msg["reasoning_content"] = full_reasoning
+        if has_tool_calls:
+            assistant_msg["tool_calls"] = [
+                {"id": tc["id"], "type": "function",
+                 "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                for tc in tool_calls_accum.values()
+            ]
+        history.append(assistant_msg)
+
+        # ── 无工具调用 → 结束 ──
+        if not tool_calls_accum:
+            if self.bus:
+                self.bus.emit("turn:end", {"text": full_content})
+            yield done_chunk()
+            return True
+
+        # ── 执行工具 ──
+        tool_results: dict[str, str] = {}
+        for item in self.tools.execute(assistant_msg["tool_calls"]):
+            if item.get("type") == ChunkType.TOOL_RESULT:
+                tool_results[item["id"]] = item["result"]
+            yield item
+
+        # ── 写入工具结果 ──
+        for tc in assistant_msg["tool_calls"]:
+            tid = tc["id"]
+            if tid in tool_results:
+                tool_msg = {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": tool_results[tid],
+                }
+                history.append(tool_msg)
+
+        return False
 
     def _record(self, chunk: dict) -> None:
         if not self._tracker:
