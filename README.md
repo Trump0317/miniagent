@@ -1,224 +1,155 @@
 # miniagent
 
-一个基于 LLM 的智能助手框架，采用 ReAct 模式 + 事件驱动架构，支持工具调用、多 Provider 切换、子代理、会话分叉、上下文压缩、三层记忆等功能。
+基于 LLM 的智能助手框架。ReAct 模式 + 事件驱动 + 树状会话，约 5000 行 Python。
 
-提供 CLI 和 Web UI 两种交互方式。
+支持 CLI / TUI / Web 三种交互方式，内置工具调用、MCP 协议、子代理、会话分叉/压缩、三层记忆。
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # 填入 API Key
 
-# 2. 配置 API Key
-cp .env.example .env
-# 编辑 .env，填入 API Key（支持 DeepSeek / OpenAI / 自定义）
+# CLI
+python agent.py                        # 交互模式
+python agent.py -p "你好"              # 单次模式
 
-# 3. 启动（新会话）
-./run.sh                               # CLI 交互模式
-./run.sh -p "你好"                     # CLI 单次模式
-./run.sh --tui                         # TUI 终端界面模式
-python -m agent.web.server             # Web UI 模式 → http://127.0.0.1:8000
+# TUI
+python agent.py --tui                  # 终端界面
 
-# 恢复最近会话
-./run.sh -r
+# Web UI
+python agent.py --web                  # http://127.0.0.1:8000
+python agent.py --web --port 8080      # 自定义端口
+
+# 恢复会话
+python agent.py -r
 ```
 
 ## 架构
 
 ```
-agent/
-├── __init__.py         # 公共导出（Agent, EventBus, AppConfig, LLMClient）
-├── system_prompt.md    # 系统提示词模板（外部文件，可独立修改）
-├── ai/                 # AI 层（Provider 配置 + LLM 调用 + 上下文加载）
-│   ├── config.py       #   多 Provider 配置 + 会话隔离
-│   ├── llm.py          #   LLM 客户端封装
-│   └── context.py      #   项目上下文文件加载
-├── cli/                # CLI 外壳（交互/print 模式）
-│   ├── app.py          #   CLI 应用程序（readline、智能输出缓冲、多行输入）
-│   └── helpers.py      #   handle_tree / handle_fork / handle_back
-├── tui/                # TUI 终端界面（prompt_toolkit, 对齐 pi-tui 风格）
-│   └── app.py          #   对话气泡、流式输出、鼠标滚轮翻页、折叠展开
-├── core/               # 核心引擎（Agent 装配 + 运行器 + 存储）
-│   ├── agent.py        #   Agent 核心（纯装配层，~130 行）
-│   ├── runner.py       #   执行引擎（LLM think-act 迭代，产出统一 chunk 格式）
-│   ├── session_tree.py #   树状会话（分叉/导航/压缩节点）
-│   ├── system_prompt.py#   系统提示词构建器（从文件加载模板 + 动态注入）
-│   ├── compaction.py   #   压缩编排服务（含 LLM 提取 + 分发 + 树压缩 + 提示词重建）
-│   ├── events.py       #   事件总线（发布/订阅，组件解耦）
-│   ├── memory.py       #   纯存储层（树为唯一数据源 + 三层记忆）
-│   ├── tracker.py      #   Token 消耗统计
-│   ├── prompts.py      #   Prompt 模板加载器
-│   └── chunks.py       #   ChunkType 枚举 + 工厂函数（TEXT/REASONING/TOOL_STATUS/TOOL_RESULT/DONE）
-├── tools/              # 工具集（扁平布局，每个工具一个文件）
-│   ├── base.py         #   工具基类 + Schema 瘦身（保留 anyOf+default）
-│   ├── registry.py     #   工具注册表
-│   ├── executor.py     #   工具执行器（串行/并行调度，产出统一 chunk）
-│   ├── bash.py         #   终端命令（安全护栏 + 空输出确认）
-│   ├── file_read.py    #   文件读取
-│   ├── file_write.py   #   文件写入
-│   ├── file_edit.py    #   文件编辑（模糊匹配）
-│   ├── web_fetch.py    #   网页抓取
-│   ├── web_search.py   #   网络搜索
-│   ├── skill.py        #   技能加载
-│   ├── todo.py         #   待办管理
-│   └── subagent.py     #   SubagentRunner + SubagentTool
-├── subagent/           # 子代理定义文件（Markdown + YAML）
-│   ├── scout.md        #   代码侦查员
-│   └── reviewer.md     #   代码审查员
-├── prompts/            # Prompt 模板文件
-│   ├── scout.md        #   /scout 命令
-│   └── review.md       #   /review 命令
-├── web/                # Web UI（FastAPI + WebSocket）
-│   ├── server.py       #   FastAPI 服务 + REST + WS 端点
-│   ├── session.py      #   多会话管理
-│   └── static/
-│       └── index.html  #   聊天界面（Markdown 渲染、分支树）
-└── tests/              # 单元测试（503 个，覆盖核心和工具层）
-    ├── test_events.py
-    ├── test_session_tree.py
-    ├── test_memory.py
-    ├── test_tracker.py
-    ├── test_prompts.py
-    ├── test_system_prompt.py
-    ├── test_compaction.py
-    ├── test_runner.py
-    ├── test_tool_base.py
-    ├── test_registry.py
-    ├── test_file_read.py
-    ├── test_file_write.py
-    ├── test_file_edit.py
-    ├── test_todo.py
-    ├── test_skill.py
-    ├── test_bash.py
-    ├── test_executor.py
-    ├── test_web_fetch.py
-    ├── test_web_search.py
-    ├── test_subagent.py
-    └── test_tui.py
+agent.py                         ← 入口（--tui / --web 分发）
+└── agent/
+    ├── ai/                       # LLM 调用封装 + Provider 配置
+    ├── cli/                      # CLI 交互外壳
+    ├── tui/                      # TUI 终端界面（prompt_toolkit）
+    ├── core/                     # 核心引擎
+    │   ├── agent.py              #   Agent 装配层
+    │   ├── runner.py             #   think-act 循环（含 LLM 重试）
+    │   ├── session_tree.py       #   树状会话
+    │   ├── memory.py             #   三层记忆（树为唯一数据源）
+    │   ├── compaction.py         #   压缩编排
+    │   ├── events.py             #   事件总线（通配符 + once）
+    │   ├── observability.py      #   结构化日志 + trace + 耗时
+    │   ├── chunks.py             #   统一 chunk 协议
+    │   ├── system_prompt.py/md   #   系统提示词
+    │   ├── tracker.py            #   Token 统计
+    │   └── prompts.py            #   /command 模板
+    ├── tools/                    # 工具集（扁平，每个工具一个文件）
+    │   ├── bash.py, file_read.py, file_write.py, file_edit.py
+    │   ├── web_fetch.py, web_search.py
+    │   ├── todo.py, skill.py, subagent.py
+    │   ├── mcp_client.py         #   MCP 客户端
+    │   ├── base.py, registry.py, executor.py
+    ├── subagent/                 # 子代理定义（.md + YAML）
+    ├── prompts/                  # 命令模板
+    └── web/                      # Web UI（FastAPI + WebSocket）
 ```
-
-**设计原则：**
-- **树状会话** — SessionTree 管理对话分支，分叉不丢数据，压缩插入 COMPACT 节点
-- **无列表双写** — `AgentMemory` 以树为唯一数据源，`history` 是 `tree.build_context()` 的实时计算
-- **事件驱动** — EventBus 解耦各组件
-- **扁平工具** — 每个工具一个 py 文件
-- **统一 chunk** — Agent 产出 `{"type":"text/reasoning/tool_status/tool_result/done"}` 格式，CLI/TUI/Web 共用
 
 ## 功能清单
 
-| 类别 | 功能 | 说明 |
-|------|------|------|
-| **核心** | ReAct 循环 | LLM think-act 迭代，自动工具调用 |
-| | 流式输出 | LLM 文本逐 token 显示 |
-| | 思维链 | 支持 DeepSeek R1 reasoning_content |
-| | 事件驱动 | EventBus 发布/订阅，组件完全解耦 |
-| **CLI** | 命令历史 | readline，↑↓回溯，退出持久化 |
-| | 内置命令 | /help /session /clear /tree /fork /back |
-| | 智能输出 | 思考内容灰色斜体 + 标签，工具输出缩进着色，多行输入支持 |
-| **TUI** | 对话界面 | prompt_toolkit，对话气泡，pi-tui 风格配色 |
-| | 滚动 | 鼠标滚轮 + PageUp/PageDown 翻页，自动跟底 |
-| | 折叠 | Ctrl+O 折叠/展开工具结果和思考内容 |
-| | 快捷键 | Ctrl+G 退出、Ctrl+F 分叉、Ctrl+B 返回、Ctrl+T 树、Esc 退出树 |
-| **Web** | 流式对话 | FastAPI + WebSocket，实时推送 |
-| | 多会话 | 新建/切换/删除，历史从后端加载 |
-| | 分支树 | 可视化 + fork/back 操作 |
-| | 界面 | Markdown 渲染、毛玻璃风格、代码复制 |
-| **工具** | Bash | 终端命令，安全护栏拦截危险操作，空输出确认 |
-| | 文件读写 | read / write / edit（模糊匹配） |
-| | 网络 | fetch / search |
-| | Todo | 待办列表增删改查 |
-| | Skill | 加载预定义技能 |
-| | Subagent | 单 / 并行 / 链式子代理（SubagentRunner 独立封装） |
-| **安全** | 安全护栏 | 正则拦截 `rm -rf /` 等危险命令 |
-| | 工具拦截 | 事件钩子可阻止任意工具执行 |
-| | 错误纠错 | 所有工具错误自动附带重试提示 |
-| **性能** | 并行工具 | 多工具并发执行（ThreadPoolExecutor） |
-| | 流式工具 | BashTool 边执行边显示输出 |
-| | 结果截断 | 50KB/2000 行自动截断 |
-| | Schema 瘦身 | 仅删 title/additionalProperties，保留 anyOf+default |
-| **模型** | 多 Provider | DeepSeek / OpenAI / 自定义 API |
-| | 子代理模型 | 子代理可独立指定模型 |
-| **会话** | 会话隔离 | 每会话独立 sessions/<ts>/ 目录，互不干扰 |
-| | --restore | `-r` 标志恢复最近会话 |
-| | 分叉回退 | `/fork` 分叉 + `/back` 返回，跳转栈不丢位置 |
-| | 主动压缩 | 每轮检查 token 阈值（默认 35%），提前压缩 |
-| | 动态提示词 | 压缩后 SystemPrompt.build(data) 注入压缩摘要 |
-| | 三层记忆 | 短期对话 / 每日摘要 / 长期记忆（memory.md） |
-| | 记忆去重 | 偏好和事实自动去重 |
-| **扩展** | 提示词模板 | 外部 .md 文件，`{placeholder}` 动态替换 |
-| | 子代理定义 | Markdown + YAML 文件配置子代理 |
-| | Prompt 模板 | `/scout`, `/review` 等快捷命令 |
-| | Token 统计 | 按模型/日期聚合统计 |
+| 类别 | 功能 |
+|------|------|
+| **核心** | ReAct 循环、流式输出、思维链、事件驱动 |
+| **韧性** | LLM 自动重试（指数退避，最多 3 次）、熔断 |
+| **可观测** | Trace ID、结构化日志（JSONL）、耗时统计、token 汇总 |
+| **CLI** | readline 历史、内置命令、多行输入、智能输出着色 |
+| **TUI** | 对话气泡、鼠标翻页、工具折叠、快捷键 |
+| **Web** | FastAPI + WebSocket 流式、多会话、分支树、文件上传、模型切换 |
+| **工具** | Bash（安全护栏）、文件读写编辑、网络搜索/抓取、Todo、Skill |
+| **MCP** | stdio 传输、自动工具发现、Claude 兼容 mcp.json |
+| **子代理** | 单/并行/链式、Markdown 定义、独立模型和工具 |
+| **会话** | 树状分叉/返回、三层记忆、自动压缩、隔离存储 |
+| **配置** | 运行时切换模型/思考级别/轮数（/model /thinking /turns） |
+| **扩展** | 外部提示词模板、子代理文件定义、自定义 Provider |
 
-## 使用示例
+## 三种界面
 
-### CLI 基本对话
-```
-[You]: 你好
-[Assistant]: 你好！有什么可以帮你的？😊
+```bash
+python agent.py                  # CLI: readline 交互
+python agent.py --tui            # TUI: 对话气泡 + 快捷键
+python agent.py --web            # Web: 浏览器 http://127.0.0.1:8000
 ```
 
 ### CLI 内置命令
+
 ```
-[You]: /help           # 显示所有命令
-[You]: /session        # 显示会话信息（ID/模型/Token）
-[You]: /clear          # 清屏
-[You]: /tree           # 查看分支树
-[You]: /fork 2         # 分叉到第 2 条用户消息之前
-[You]: /back           # 返回分叉前
+/help             显示帮助
+/config           显示/修改配置
+/model [name]     显示/切换模型
+/thinking [level] 显示/切换思考级别 (off/minimal/low/medium/high/xhigh)
+/turns [n]        显示/设置最大轮数（0 = 无限制）
+/tree             显示会话分支树
+/fork [n]         分叉到第 n 条消息之前
+/back             返回分叉前位置
+/clear            清屏
 ```
 
-### TUI
-```
-# 启动 TUI 模式
-python agent.py --tui
+### TUI 快捷键
 
-# 快捷键:
-#   Ctrl+G  退出          Ctrl+F  分叉
-#   Ctrl+B  返回          Ctrl+T  分支树
-#   Ctrl+O  展开/折叠      Esc    退出树视图
-#   PageUp/PageDown/滚轮  翻页回看
-```
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+Q | 退出 |
+| Ctrl+F | 分叉 |
+| Ctrl+B | 返回 |
+| Ctrl+T | 分支树 |
+| Ctrl+E | 展开/折叠工具结果 |
+| Esc | 退出树视图 / 清空输入 |
 
-### Web UI
-```
-python -m agent.web.server
-# 打开 http://127.0.0.1:8000
-# 支持多会话、分支树、Markdown 渲染
-```
+## MCP 支持
 
-### 子代理
-```
-[You]: 用 scout 子代理找一下 agent/core/runner.py 里的方法
-[Assistant]: [执行工具: subagent_tool...]
-  ╭─ [子代理] 开始执行 ─
-  ...侦查结果...
-  ╰─ [子代理] 完成 ─
+在项目根目录创建 `mcp.json`（兼容 Claude Code 格式）：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+    }
+  }
+}
 ```
 
-### 命令模板
-```
-[You]: /scout agent/core/agent.py     # 展开为"用 scout 侦查 agent/core/agent.py"
-[You]: /review agent/core/runner.py   # 展开为"用 reviewer 审查 agent/core/runner.py"
-```
+启动时自动连接，工具以 `mcp__<server>__<tool>` 前缀注册。连接失败跳过并警告。
 
-### 自定义子代理
+## 子代理
 
-在 `agent/subagent/` 下创建 `.md` 文件即可，无需改代码：
+在 `agent/subagent/` 下创建 `.md` 文件：
 
 ```markdown
 ---
 name: my-agent
-description: 我的自定义代理
+description: 我的代理
 tools: bash_tool, file_read_tool
 model: deepseek-v4-flash
-max_turns: 8
+max_turns: 10
 ---
 
 你是我的自定义子代理...
+```
+
+LLM 通过 `subagent_tool` 调用：`/scout` 展开为用 scout 侦查代码，`/review` 展开为用 reviewer 审查。
+
+## 可观测性
+
+每次请求自动生成 trace ID，记录到 `sessions/<ts>/trace.jsonl`：
+
+```json
+{"ts":"2026-06-03T10:48:12","level":"INFO","trace":"a32d8df6","event":"request:start","data":{"message":"hello"}}
+{"ts":"2026-06-03T10:48:12","level":"INFO","trace":"a32d8df6","event":"turn:start","data":{"turn":1}}
+{"ts":"2026-06-03T10:48:12","level":"INFO","trace":"a32d8df6","event":"tool:end","data":{"tool":"bash_tool","duration_ms":15,"ok":true}}
+{"ts":"2026-06-03T10:48:12","level":"INFO","trace":"a32d8df6","event":"request:summary","data":{"turns":1,"tool_calls":1,...}}
 ```
 
 ## 配置 (.env)
@@ -226,13 +157,29 @@ max_turns: 8
 ```bash
 # DeepSeek（默认）
 DEEPSEEK_API_KEY=sk-xxx
-DEEPSEEK_API_BASE_URL=https://api.deepseek.com/v1
 
 # 或 OpenAI
 # OPENAI_API_KEY=sk-xxx
-# OPENAI_API_BASE_URL=https://api.openai.com/v1
 
-# 或自定义（Ollama / vLLM 等）
+# 或自定义
 # API_KEY=xxx
 # API_BASE_URL=http://localhost:8000/v1
 ```
+
+## 测试
+
+```bash
+python -m unittest discover tests    # 552 个测试
+```
+
+| 层级 | 覆盖 |
+|------|------|
+| 单元测试 | 21 个模块，全组件覆盖 |
+| 集成测试 | Agent 完整流程、持久化、树导航、压缩、重试 |
+
+## 项目文档
+
+- `doc/agent_logic.md` — 核心逻辑详解（架构、数据流、持久化、压缩）
+- `doc/multi-agent-analysis.md` — Multi-Agent 可行性分析
+- `doc/commit.md` — 提交规范
+- `AGENTS.md` — 项目上下文（供 AI 编码助手使用）
