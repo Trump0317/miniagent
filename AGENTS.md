@@ -351,7 +351,7 @@ python -m unittest tests.test_events
 - [x] 审查并优化 SystemPrompt 的系统提示词内容 → 外部模板文件
 - [x] 优化子代理（scout / reviewer）的提示词 → 结构化流程+清单
 - [x] 优化命令模板（/scout / /review）的展开模板 → 细化指引
-- [ ] 考虑添加任务分解/规划相关的提示词引导
+- [x] 考虑添加任务分解/规划相关的提示词引导
 
 ### 2. 实现 Web UI ✅（explore 分支）
 - [x] FastAPI + WebSocket 流式对话
