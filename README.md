@@ -4,25 +4,26 @@
 
 支持 CLI / TUI / Web 三种交互方式，内置工具调用、MCP 协议、子代理、会话分叉/压缩、三层记忆。
 
+## 安装
+
+```bash
+pip install -e .              # 开发模式
+pip install -e ".[web,tui]"   # 含 Web/TUI 依赖
+pip install -e ".[all]"       # 全部依赖（含 MCP）
+```
+
 ## 快速开始
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env   # 填入 API Key
+# 配置 API Key
+export DEEPSEEK_API_KEY=sk-xxx
 
-# CLI
-python agent.py                        # 交互模式
-python agent.py -p "你好"              # 单次模式
-
-# TUI
-python agent.py --tui                  # 终端界面
-
-# Web UI
-python agent.py --web                  # http://127.0.0.1:8000
-python agent.py --web --port 8080      # 自定义端口
-
-# 恢复会话
-python agent.py -r
+miniagent                        # CLI 交互
+miniagent --tui                  # TUI 终端界面
+miniagent --web                  # Web UI → http://127.0.0.1:8000
+miniagent --web --port 8080      # 自定义端口
+miniagent -p "你好"              # 单次模式
+miniagent -r                     # 恢复上次会话
 ```
 
 ## 架构

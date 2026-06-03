@@ -59,9 +59,9 @@ class AppConfig:
     api_base_url: str = ""
 
     # ── 路径 ──
-    root: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
-    memory_dir: Path | None = None
-    skills_dir: Path | None = None
+    root: Path = field(default_factory=Path.cwd)  # 用户项目根目录
+    memory_dir: Path | None = None  # 默认 root / ".memory"
+    skills_dir: Path | None = None  # 默认 root / "skills"
 
     # ── 运行时参数 ──
     max_turns: int | None = None
@@ -84,9 +84,9 @@ class AppConfig:
     mcp_config_path: str = ""  # mcp.json 路径（空 = 不启用 MCP）
 
     def __post_init__(self):
-        # 路径默认值
+        # 路径默认值（用户数据放在项目根目录）
         if self.memory_dir is None:
-            self.memory_dir = self.root / "agent" / ".memory"
+            self.memory_dir = self.root / ".memory"
         self.memory_dir = Path(self.memory_dir)
         if self.skills_dir is None:
             self.skills_dir = self.root / "skills"

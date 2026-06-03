@@ -61,9 +61,10 @@ class Agent:
         self.tracker = TokenTracker(log_file=cfg.session_dir / "tokens.jsonl")
 
         # ── 技能 / 子代理 / 命令 ──
+        _pkg_dir = Path(__file__).parent  # agent/ 包目录（随框架走）
         skills = SkillsLoader(skill_directory=cfg.skills_dir)
-        agent_loader = AgentLoader(cfg.root / "agent" / "subagent")
-        self.prompt_loader = PromptLoader(cfg.root / "agent" / "prompts")
+        agent_loader = AgentLoader(_pkg_dir / "subagent")
+        self.prompt_loader = PromptLoader(_pkg_dir / "prompts")
 
         # ── 系统提示词构建器 ──
         self._prompt = SystemPrompt(
